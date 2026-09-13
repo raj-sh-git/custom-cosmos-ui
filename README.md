@@ -86,14 +86,14 @@ docker run -d \
   -e COSMOS_USER_CONTAINER=cosmosusers \
   -e COSMOS_LOGS_CONTAINER=cosmosactivitylogs \
   --name cosmos-ui \
-  dockercustom/cosmos-ui:latest
+  opsutility/cosmos-ui:latest
 ```
 Access the application at `http://localhost:8000`.
 
 ### 2. Deploy to Azure Kubernetes Service (AKS) / Azure Container Apps (ACA)
 Deploying within your private Virtual Network (VNet) allows seamless access to private Cosmos DB endpoints without exposing connection strings or accounts to the public internet:
 
-1. **Pull Image**: Use `dockercustom/cosmos-ui:latest` (or push to your private Azure Container Registry).
+1. **Pull Image**: Use `opsutility/cosmos-ui:latest` (or push to your private Azure Container Registry).
 2. **Configure Service & Ingress**: Map container port `8000` to your internal ingress controller with path `/cosmos-ui`.
 3. **Network Rules**: Ensure the subnet has VNet peering, private DNS zone resolution, or Private Endpoints enabled for Cosmos DB.
 
