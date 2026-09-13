@@ -8,12 +8,13 @@ import queue
 import random
 import threading
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import (
-    Flask, render_template, request, redirect, url_for, flash, session, jsonify, send_file, Blueprint
+    Flask, render_template, request, redirect, url_for, flash, session, jsonify, send_file, Blueprint, Response, abort, has_request_context
 )
 from flask_session import Session
+from werkzeug.security import generate_password_hash, check_password_hash
 from azure.identity import ClientSecretCredential
 from azure.cosmos import CosmosClient, PartitionKey, exceptions as cosmos_exceptions
 from openpyxl import Workbook, load_workbook
@@ -41,6 +42,26 @@ app.config.update(
 )
 Session(app)
 
+# System Database and Container Configuration (Overridable via Environment Variables)
+SYSTEM_DB = os.environ.get("COSMOS_AUTH_DB", os.environ.get("SYSTEM_DB", "cosmos-access"))
+USER_CONTAINER = os.environ.get("COSMOS_USER_CONTAINER", os.environ.get("USER_CONTAINER", "cosmosusers"))
+LOGS_CONTAINER = os.environ.get("COSMOS_LOGS_CONTAINER", os.environ.get("LOGS_CONTAINER", "cosmosactivitylogs"))
+USER_PK_PATH = os.environ.get("COSMOS_USER_PK_PATH", "/id")
+LOGS_PK_PATH = os.environ.get("COSMOS_LOGS_PK_PATH", "/id")
+
+@app.context_processor
+def inject_user_context():
+    user = session.get('user') if (has_request_context() and 'user' in session) else None
+    return {
+        'current_user': user,
+        'user_role': (user.get('role') if user else 'contributor'),
+        'is_admin': (user.get('role') == 'admin') if user else False,
+        'is_reader': (user.get('role') == 'reader') if user else False,
+        'system_db_name': SYSTEM_DB,
+        'user_container_name': USER_CONTAINER,
+        'logs_container_name': LOGS_CONTAINER
+    }
+
 # In-memory store for active CosmosClient instances
 CLIENT_STORE = {}
 
@@ -59,15 +80,484 @@ def get_store():
     sid = session.get("sid")
     return CLIENT_STORE.get(sid) if sid else None
 
+def auto_connect_from_env_if_available():
+    """Auto-connects to Cosmos DB if environment variables are set."""
+    if get_store():
+        return True
+
+    conn_str = os.environ.get("AZURE_COSMOS_CONNECTION_STRING") or os.environ.get("COSMOS_CONNECTION_STRING")
+    if conn_str:
+        try:
+            client = CosmosClient.from_connection_string(conn_str)
+            _ = list(client.list_databases())
+            sid = session.get("sid") or str(uuid.uuid4())
+            session["sid"] = sid
+            endpoint_name = "Cosmos DB Account"
+            for part in conn_str.split(";"):
+                if part.startswith("AccountEndpoint="):
+                    endpoint_name = part.replace("AccountEndpoint=", "")
+            session["auth_info"] = {
+                "endpoint": endpoint_name,
+                "method": "Connection String (Env)"
+            }
+            CLIENT_STORE[sid] = {
+                "client": client,
+                "login_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            return True
+        except Exception as e:
+            print(f"Env conn_str connection notice: {e}")
+
+    endpoint = os.environ.get("AZURE_COSMOS_ENDPOINT") or os.environ.get("COSMOS_ENDPOINT")
+    key = os.environ.get("AZURE_COSMOS_KEY") or os.environ.get("COSMOS_KEY")
+    if endpoint and key:
+        try:
+            client = CosmosClient(endpoint, credential=key, connection_verify=True)
+            _ = list(client.list_databases())
+            sid = session.get("sid") or str(uuid.uuid4())
+            session["sid"] = sid
+            session["auth_info"] = {
+                "endpoint": endpoint,
+                "method": "Account Key (Env)"
+            }
+            CLIENT_STORE[sid] = {
+                "client": client,
+                "login_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            return True
+        except Exception as e:
+            print(f"Env endpoint/key connection notice: {e}")
+
+    return False
+
+def get_cosmos_client():
+    store = get_store()
+    if store:
+        return store["client"]
+    if auto_connect_from_env_if_available():
+        store = get_store()
+        return store["client"] if store else None
+    return None
+
+def is_cosmos_connected():
+    return bool(get_cosmos_client())
+
+def require_auth():
+    """Requires both Cosmos DB backend connection and valid user login session."""
+    if not is_cosmos_connected():
+        return False
+    user = session.get("user")
+    return bool(user and user.get("is_authenticated"))
+
+def is_admin():
+    return require_auth() and session.get("user", {}).get("role") == "admin"
+
+def has_write_permission():
+    return require_auth() and session.get("user", {}).get("role") in ["admin", "contributor"]
+
 def login_required(f):
     from functools import wraps
     @wraps(f)
     def inner(*a, **kw):
-        if not get_store():
-            flash("Please login first to access this resource.", "warning")
+        if not require_auth():
+            flash("Please sign in to access this resource.", "warning")
             return redirect(url_for("ui.login"))
         return f(*a, **kw)
     return inner
+
+def admin_required(f):
+    from functools import wraps
+    @wraps(f)
+    def inner(*a, **kw):
+        if not require_auth():
+            flash("Please sign in to access this resource.", "warning")
+            return redirect(url_for("ui.login"))
+        if not is_admin():
+            flash("Permission denied: Administrator role required.", "danger")
+            return redirect(url_for("ui.dashboard"))
+        return f(*a, **kw)
+    return inner
+
+def write_permission_required(f):
+    from functools import wraps
+    @wraps(f)
+    def inner(*a, **kw):
+        if not require_auth():
+            flash("Please sign in to access this resource.", "warning")
+            return redirect(url_for("ui.login"))
+        if not has_write_permission():
+            flash("Permission denied: Read-only accounts cannot modify resources.", "danger")
+            return redirect(request.referrer or url_for("ui.dashboard"))
+        return f(*a, **kw)
+    return inner
+
+# ---------- System Database & User Management Helpers ----------
+
+def normalize_pk_path(pk):
+    """Ensures partition key path starts with a leading slash."""
+    if not pk:
+        return "/id"
+    pk = str(pk).strip()
+    return pk if pk.startswith("/") else "/" + pk
+
+def ensure_system_database(client):
+    """Idempotently ensures SYSTEM_DB exists in Cosmos DB."""
+    try:
+        db = client.get_database_client(SYSTEM_DB)
+        db.read()
+        return db
+    except Exception:
+        pass
+
+    try:
+        return client.create_database_if_not_exists(id=SYSTEM_DB)
+    except Exception as e1:
+        try:
+            return client.create_database(id=SYSTEM_DB)
+        except Exception as e2:
+            print(f"Notice: database creation fallback for {SYSTEM_DB}: {e2}")
+            return client.get_database_client(SYSTEM_DB)
+
+def ensure_system_container(client, container_name, pk_path):
+    """
+    Idempotently creates the system container with multi-tier fallback for serverless,
+    provisioned throughput (400 RU/s), and shared database throughput modes.
+    """
+    db = ensure_system_database(client)
+    norm_pk = normalize_pk_path(pk_path)
+    pk = PartitionKey(path=norm_pk)
+
+    # 1. Check if container already exists
+    try:
+        c = db.get_container_client(container_name)
+        c.read()
+        return c
+    except Exception:
+        pass
+
+    # 2. Try creating container without explicit throughput (serverless or shared-throughput DB)
+    try:
+        return db.create_container_if_not_exists(id=container_name, partition_key=pk)
+    except Exception as e_no_tp:
+        print(f"Notice: create_container_if_not_exists ({container_name}) without throughput: {e_no_tp}")
+
+    # 3. Try creating container with default 400 RU/s (provisioned non-shared DB)
+    try:
+        return db.create_container_if_not_exists(id=container_name, partition_key=pk, offer_throughput=400)
+    except Exception as e_tp:
+        print(f"Notice: create_container_if_not_exists ({container_name}) with 400 RU/s: {e_tp}")
+
+    # 4. Try direct create_container without throughput
+    try:
+        return db.create_container(id=container_name, partition_key=pk)
+    except Exception as e_dir:
+        print(f"Notice: create_container ({container_name}) direct: {e_dir}")
+
+    # 5. Try direct create_container with 400 RU/s
+    try:
+        return db.create_container(id=container_name, partition_key=pk, offer_throughput=400)
+    except Exception as e_final:
+        print(f"Error: All creation attempts for system container {container_name} failed: {e_final}")
+        return db.get_container_client(container_name)
+
+def get_system_user_container(client=None):
+    """Returns the container client for user management, ensuring DB and container exist."""
+    cl = client or get_cosmos_client()
+    if not cl:
+        raise ValueError("Cosmos DB client is not initialized.")
+    return ensure_system_container(cl, USER_CONTAINER, USER_PK_PATH)
+
+def get_system_logs_container(client=None):
+    """Returns the container client for activity logs, ensuring DB and container exist."""
+    cl = client or get_cosmos_client()
+    if not cl:
+        raise ValueError("Cosmos DB client is not initialized.")
+    return ensure_system_container(cl, LOGS_CONTAINER, LOGS_PK_PATH)
+
+def ensure_system_containers_exist(client=None):
+    """Ensures SYSTEM_DB, USER_CONTAINER, and LOGS_CONTAINER exist in Cosmos DB."""
+    try:
+        cl = client or get_cosmos_client()
+        if not cl:
+            return
+        get_system_user_container(cl)
+        get_system_logs_container(cl)
+    except Exception as e:
+        print(f"Notice: system containers check/create: {e}")
+        traceback.print_exc()
+
+def check_has_any_users(client=None):
+    """Checks whether any user accounts exist in USER_CONTAINER."""
+    try:
+        cl = client or get_cosmos_client()
+        if not cl:
+            return False
+        container = get_system_user_container(cl)
+        res = list(container.query_items("SELECT VALUE COUNT(1) FROM c", enable_cross_partition_query=True))
+        return bool(res and res[0] > 0)
+    except cosmos_exceptions.CosmosResourceNotFoundError:
+        return False
+    except Exception as e:
+        print(f"Notice: error checking users in {USER_CONTAINER}: {e}")
+        return False
+
+def get_user_by_username(client, username):
+    """Retrieves a user entity by username (case-insensitive)."""
+    if not username or not client:
+        return None
+    try:
+        uname = username.strip().lower()
+        container = get_system_user_container(client)
+        query = "SELECT * FROM c WHERE LOWER(c.username) = @uname OR c.id = @uname"
+        params = [{"name": "@uname", "value": uname}]
+        items = list(container.query_items(query=query, parameters=params, enable_cross_partition_query=True))
+        return items[0] if items else None
+    except cosmos_exceptions.CosmosResourceNotFoundError:
+        return None
+    except Exception as e:
+        print(f"Error fetching user {username}: {e}")
+        return None
+
+def save_user(client, username, password=None, password_hash=None, email=None, display_name=None, role=None, is_active=None, must_change_password=None, update_login=False):
+    """
+    Creates or updates a user document in USER_CONTAINER with salted one-way scrypt password hashing.
+    """
+    uname = username.strip()
+    row_id = uname.lower()
+    container = get_system_user_container(client)
+
+    existing = get_user_by_username(client, uname)
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    if existing is None:
+        user_doc = {
+            "id": row_id,
+            "username": uname,
+            "display_name": (display_name or uname).strip(),
+            "email": (email or "").strip(),
+            "role": (role or "contributor").lower().strip(),
+            "is_active": True if is_active is None else bool(is_active),
+            "must_change_password": False if must_change_password is None else bool(must_change_password),
+            "created_at": now_iso,
+            "last_login": now_iso if update_login else ""
+        }
+    else:
+        user_doc = dict(existing)
+        if email is not None:
+            user_doc["email"] = email.strip()
+        if display_name is not None:
+            user_doc["display_name"] = display_name.strip()
+        if role is not None:
+            user_doc["role"] = role.lower().strip()
+        if is_active is not None:
+            user_doc["is_active"] = bool(is_active)
+        if must_change_password is not None:
+            user_doc["must_change_password"] = bool(must_change_password)
+        if update_login:
+            user_doc["last_login"] = now_iso
+
+    if password:
+        user_doc["password_hash"] = generate_password_hash(password, method="scrypt")
+    elif password_hash:
+        user_doc["password_hash"] = password_hash
+
+    try:
+        execute_with_429_retry(container.upsert_item, body=user_doc)
+    except cosmos_exceptions.CosmosResourceNotFoundError:
+        container = ensure_system_container(client, USER_CONTAINER, USER_PK_PATH)
+        execute_with_429_retry(container.upsert_item, body=user_doc)
+
+    return user_doc
+
+def get_all_users(client):
+    """List all registered users from USER_CONTAINER."""
+    try:
+        container = get_system_user_container(client)
+        items = list(container.query_items("SELECT * FROM c", enable_cross_partition_query=True))
+        users = []
+        for u in items:
+            u.setdefault("display_name", u.get("username", ""))
+            u.setdefault("email", "")
+            u.setdefault("role", "contributor")
+            u.setdefault("is_active", True)
+            u.setdefault("must_change_password", False)
+            u.setdefault("last_login", "")
+            u.setdefault("created_at", "")
+            users.append(u)
+        users.sort(key=lambda x: x.get("created_at", "") or x.get("username", ""))
+        return users
+    except cosmos_exceptions.CosmosResourceNotFoundError:
+        return []
+    except Exception as e:
+        print(f"Error listing users: {e}")
+        return []
+
+def delete_user_by_username(client, username):
+    """Deletes a user document by username."""
+    uname = username.strip().lower()
+    container = get_system_user_container(client)
+    user = get_user_by_username(client, uname)
+    if user:
+        item_id = user["id"]
+        pk_path = normalize_pk_path(USER_PK_PATH)
+        pk_key = pk_path.strip("/")
+        pk_val = user.get(pk_key, item_id)
+        execute_with_429_retry(container.delete_item, item=item_id, partition_key=pk_val)
+
+def bulk_create_users_from_file(client, file_obj, filename):
+    """Bulk imports users from CSV or Excel file."""
+    created = 0
+    skipped = 0
+    errors = []
+    rows = []
+    fn = filename.lower()
+    
+    try:
+        if fn.endswith(".csv"):
+            content = file_obj.read().decode("utf-8-sig", errors="ignore")
+            reader = csv.DictReader(io.StringIO(content))
+            for r in reader:
+                rows.append(r)
+        elif fn.endswith(".xlsx"):
+            wb = load_workbook(file_obj, data_only=True)
+            ws = wb.active
+            headers = None
+            for row_idx, row in enumerate(ws.iter_rows(values_only=True)):
+                if row_idx == 0:
+                    headers = [str(h).strip().lower() if h is not None else "" for h in row]
+                else:
+                    if not any(row):
+                        continue
+                    row_dict = {}
+                    for i, val in enumerate(row):
+                        if headers and i < len(headers) and headers[i]:
+                            row_dict[headers[i]] = str(val).strip() if val is not None else ""
+                    rows.append(row_dict)
+        else:
+            return 0, 0, ["Unsupported file format. Please upload a .csv or .xlsx file."]
+    except Exception as e:
+        return 0, 0, [f"Error reading file: {e}"]
+
+    for idx, row in enumerate(rows, start=2):
+        n_row = {str(k).strip().lower(): str(v).strip() for k, v in row.items() if k is not None}
+        username = n_row.get("username", "").strip()
+        email = n_row.get("email", "").strip()
+        password = n_row.get("password", "").strip()
+        role = n_row.get("role", "contributor").strip().lower()
+        if role not in ["admin", "contributor", "reader"]:
+            role = "contributor"
+        enforce_reset_val = n_row.get("enforcepasswordreset", n_row.get("enforce_reset", "yes")).strip().lower()
+        must_change = enforce_reset_val in ["yes", "true", "1", "y"]
+        display_name = n_row.get("display_name", n_row.get("displayname", username)).strip()
+
+        if not username:
+            skipped += 1
+            errors.append(f"Row {idx}: Missing username.")
+            continue
+        if not password:
+            skipped += 1
+            errors.append(f"Row {idx}: Missing password for user '{username}'.")
+            continue
+
+        try:
+            save_user(
+                client=client,
+                username=username,
+                password=password,
+                email=email,
+                display_name=display_name,
+                role=role,
+                is_active=True,
+                must_change_password=must_change
+            )
+            created += 1
+        except Exception as e:
+            skipped += 1
+            errors.append(f"Row {idx} ({username}): {e}")
+
+    return created, skipped, errors
+
+# ---------- Activity Audit Logging Helper ----------
+
+def log_activity(service, action, target, status='SUCCESS', details='', username=None, role=None):
+    """Writes an immutable activity audit log entry into LOGS_CONTAINER in Cosmos DB."""
+    try:
+        client = get_cosmos_client()
+        if not client:
+            return
+        container = get_system_logs_container(client)
+
+        now = datetime.now(timezone.utc)
+        inv_ts = f"{9999999999 - int(now.timestamp()):010d}"
+        log_id = f"{inv_ts}_{uuid.uuid4().hex[:8]}"
+
+        user_info = {}
+        ip = "127.0.0.1"
+        if has_request_context():
+            try:
+                user_info = session.get("user", {}) if session else {}
+            except Exception:
+                user_info = {}
+            try:
+                ip = request.headers.get("X-Forwarded-For", request.remote_addr or "127.0.0.1").split(",")[0].strip()
+            except Exception:
+                ip = "127.0.0.1"
+
+        uname = username or user_info.get("username") or "Anonymous"
+        urole = role or user_info.get("role") or "N/A"
+
+        log_doc = {
+            "id": log_id,
+            "timestamp": now.isoformat(),
+            "timestamp_formatted": now.strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "username": uname,
+            "role": urole,
+            "service": service,
+            "action": action,
+            "target": str(target)[:500] if target else "",
+            "status": status,
+            "details": str(details)[:1000] if details else "",
+            "ip_address": ip
+        }
+        try:
+            execute_with_429_retry(container.create_item, body=log_doc)
+        except cosmos_exceptions.CosmosResourceNotFoundError:
+            container = ensure_system_container(client, LOGS_CONTAINER, LOGS_PK_PATH)
+            execute_with_429_retry(container.create_item, body=log_doc)
+    except Exception as e:
+        print(f"Activity logging error: {e}")
+
+def query_activity_logs(client, service=None, username=None, status=None, from_date=None, to_date=None, limit=250):
+    """Queries activity audit logs from LOGS_CONTAINER with filtering."""
+    try:
+        container = get_system_logs_container(client)
+
+        query = "SELECT * FROM c WHERE 1=1"
+        params = []
+
+        if service and service != "all":
+            query += " AND LOWER(c.service) = @service"
+            params.append({"name": "@service", "value": service.lower().strip()})
+        if username and username.strip():
+            query += " AND CONTAINS(LOWER(c.username), @uname)"
+            params.append({"name": "@uname", "value": username.lower().strip()})
+        if status and status != "all":
+            query += " AND c.status = @status"
+            params.append({"name": "@status", "value": status.strip()})
+        if from_date and from_date.strip():
+            query += " AND c.timestamp >= @from_date"
+            params.append({"name": "@from_date", "value": f"{from_date.strip()}T00:00:00"})
+        if to_date and to_date.strip():
+            query += " AND c.timestamp <= @to_date"
+            params.append({"name": "@to_date", "value": f"{to_date.strip()}T23:59:59"})
+
+        query += f" ORDER BY c.id ASC OFFSET 0 LIMIT {limit}"
+        return list(container.query_items(query=query, parameters=params, enable_cross_partition_query=True))
+    except cosmos_exceptions.CosmosResourceNotFoundError:
+        return []
+    except Exception as e:
+        print(f"Error querying activity logs: {e}")
+        return []
 
 # ---------- Helper Functions ----------
 def execute_with_429_retry(func, *args, max_retries=10, initial_delay=0.1, **kwargs):
@@ -269,95 +759,585 @@ def build_search_query(search_mode, search_query):
 def index_redirect():
     return redirect(url_for("ui.dashboard"))
 
-# ---------- Routes ----------
+# ---------- Authentication & Portal Setup Routes ----------
 
 @ui.route("/login", methods=["GET", "POST"])
 def login():
+    auto_connect_from_env_if_available()
+    cosmos_connected = is_cosmos_connected()
+    client = get_cosmos_client()
+
+    if cosmos_connected and client:
+        ensure_system_containers_exist(client)
+        if not check_has_any_users(client):
+            return redirect(url_for("ui.setup"))
+
     if request.method == "POST":
-        auth_method = request.form.get("auth_method")
-        endpoint = request.form.get("endpoint", "").strip()
-        
-        # Connection values
-        conn_string = request.form.get("conn_string", "").strip()
-        account_key = request.form.get("account_key", "").strip()
-        
-        # Service principal values
-        tenant_id = request.form.get("tenant_id", "").strip()
-        client_id = request.form.get("client_id", "").strip()
-        client_secret = request.form.get("client_secret", "").strip()
+        login_type = request.form.get("login_type")
 
-        try:
-            client = None
-            auth_info = {}
+        # 1. User Authentication (Username + Password)
+        if login_type == "user_auth" or ("username" in request.form and "password" in request.form and not request.form.get("conn_string")):
+            if not cosmos_connected or not client:
+                flash("Cosmos DB backend is not connected. Please connect first.", "warning")
+                return redirect(url_for("ui.login"))
 
-            if auth_method == "conn_str":
-                if not conn_string:
-                    raise ValueError("Connection string is required.")
-                client = CosmosClient.from_connection_string(conn_string)
-                # Parse endpoint from conn_str for display
-                for part in conn_string.split(";"):
-                    if part.startswith("AccountEndpoint="):
-                        auth_info["endpoint"] = part.replace("AccountEndpoint=", "")
-                auth_info["method"] = "Connection String"
-            
-            elif auth_method == "key":
-                if not endpoint or not account_key:
-                    raise ValueError("Endpoint URI and Account Key are required.")
-                client = CosmosClient(endpoint, credential=account_key, connection_verify=True)
-                auth_info["endpoint"] = endpoint
-                auth_info["method"] = "Account Key"
-                
-            elif auth_method == "sp":
-                if not endpoint or not tenant_id or not client_id or not client_secret:
-                    raise ValueError("All Service Principal fields are required.")
-                credential = ClientSecretCredential(tenant_id, client_id, client_secret)
-                client = CosmosClient(endpoint, credential=credential, connection_verify=True)
-                auth_info["endpoint"] = endpoint
-                auth_info["method"] = "Service Principal"
-            else:
-                raise ValueError("Invalid authentication method selected.")
+            username = request.form.get("username", "").strip()
+            password = request.form.get("password", "")
 
-            # Test connection by listing databases
-            databases = list(client.list_databases())
-            
-            # Setup session
-            sid = str(uuid.uuid4())
-            session["sid"] = sid
-            session["auth_info"] = auth_info
-            
-            # Store in CLIENT_STORE
-            CLIENT_STORE[sid] = {
-                "client": client,
-                "login_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            user = get_user_by_username(client, username)
+            if not user or not check_password_hash(user.get("password_hash", ""), password):
+                log_activity("auth", "LOGIN_FAILED", username, status="FAILED", details="Invalid username or password", username=username, role="N/A")
+                flash("Invalid username or password.", "danger")
+                return redirect(url_for("ui.login"))
+
+            if not user.get("is_active", True):
+                log_activity("auth", "LOGIN_BLOCKED", username, status="FAILED", details="Account is disabled", username=username, role=user.get("role"))
+                flash("Your account is disabled. Please contact your administrator.", "danger")
+                return redirect(url_for("ui.login"))
+
+            # Check if password reset is enforced
+            if user.get("must_change_password", False):
+                session["pending_user"] = username
+                return redirect(url_for("ui.force_password_reset"))
+
+            # Update last login & establish authenticated session
+            save_user(client, username=username, update_login=True)
+            session["user"] = {
+                "username": user["username"],
+                "display_name": user.get("display_name") or user["username"],
+                "email": user.get("email", ""),
+                "role": user.get("role", "contributor"),
+                "is_authenticated": True
             }
-            
-            flash("Successfully connected to Cosmos DB!", "success")
+            log_activity("auth", "LOGIN", username, status="SUCCESS", username=username, role=user.get("role"))
+            flash(f"Welcome back, {session['user']['display_name']}!", "success")
             return redirect(url_for("ui.dashboard"))
 
+        else:
+            # 2. Cosmos DB Backend Connection Submitted
+            return connect_cosmos()
+
+    if require_auth():
+        return redirect(url_for("ui.dashboard"))
+
+    return render_template("login.html", cosmos_connected=cosmos_connected)
+
+
+@ui.route("/connect-cosmos", methods=["POST"])
+def connect_cosmos():
+    auth_method = request.form.get("auth_method")
+    endpoint = request.form.get("endpoint", "").strip()
+    conn_string = request.form.get("conn_string", "").strip()
+    account_key = request.form.get("account_key", "").strip()
+    tenant_id = request.form.get("tenant_id", "").strip()
+    client_id = request.form.get("client_id", "").strip()
+    client_secret = request.form.get("client_secret", "").strip()
+
+    try:
+        client = None
+        auth_info = {}
+
+        if auth_method == "conn_str":
+            if not conn_string:
+                raise ValueError("Connection string is required.")
+            client = CosmosClient.from_connection_string(conn_string)
+            for part in conn_string.split(";"):
+                if part.startswith("AccountEndpoint="):
+                    auth_info["endpoint"] = part.replace("AccountEndpoint=", "")
+            auth_info["method"] = "Connection String"
+
+        elif auth_method == "key":
+            if not endpoint or not account_key:
+                raise ValueError("Endpoint URI and Account Key are required.")
+            client = CosmosClient(endpoint, credential=account_key, connection_verify=True)
+            auth_info["endpoint"] = endpoint
+            auth_info["method"] = "Account Key"
+
+        elif auth_method == "sp":
+            if not endpoint or not tenant_id or not client_id or not client_secret:
+                raise ValueError("All Service Principal fields are required.")
+            credential = ClientSecretCredential(tenant_id, client_id, client_secret)
+            client = CosmosClient(endpoint, credential=credential, connection_verify=True)
+            auth_info["endpoint"] = endpoint
+            auth_info["method"] = "Service Principal"
+        else:
+            raise ValueError("Invalid authentication method selected.")
+
+        # Test connection by listing databases
+        _ = list(client.list_databases())
+
+        sid = str(uuid.uuid4())
+        session["sid"] = sid
+        session["auth_info"] = auth_info
+        CLIENT_STORE[sid] = {
+            "client": client,
+            "login_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+
+        ensure_system_containers_exist(client)
+        if not check_has_any_users(client):
+            return redirect(url_for("ui.setup"))
+
+        flash("Connected to Cosmos DB. Please sign in.", "success")
+        return redirect(url_for("ui.login"))
+
+    except Exception as e:
+        traceback.print_exc()
+        flash(f"Connection failed: {str(e)}", "danger")
+        return redirect(url_for("ui.login"))
+
+
+@ui.route("/setup", methods=["GET", "POST"])
+def setup():
+    auto_connect_from_env_if_available()
+    if not is_cosmos_connected():
+        flash("Please configure Cosmos DB connection first.", "warning")
+        return redirect(url_for("ui.login"))
+
+    client = get_cosmos_client()
+    ensure_system_containers_exist(client)
+    if check_has_any_users(client):
+        flash("Setup has already been completed.", "info")
+        return redirect(url_for("ui.login"))
+
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        email = request.form.get("email", "").strip()
+        display_name = request.form.get("display_name", "").strip() or "System Administrator"
+        password = request.form.get("password", "")
+        confirm_password = request.form.get("confirm_password", "")
+
+        if not username or not password:
+            flash("Username and password are required.", "danger")
+            return render_template("setup.html")
+        if password != confirm_password:
+            flash("Passwords do not match.", "danger")
+            return render_template("setup.html")
+        if len(password) < 6:
+            flash("Password must be at least 6 characters.", "danger")
+            return render_template("setup.html")
+
+        try:
+            save_user(
+                client=client,
+                username=username,
+                password=password,
+                email=email,
+                display_name=display_name,
+                role="admin",
+                is_active=True,
+                must_change_password=False,
+                update_login=True
+            )
+            session["user"] = {
+                "username": username,
+                "display_name": display_name,
+                "email": email,
+                "role": "admin",
+                "is_authenticated": True
+            }
+            log_activity("auth", "INITIAL_SETUP", username, status="SUCCESS", details="Master Admin Created", username=username, role="admin")
+            flash("Master administrator account initialized successfully! Welcome to Cosmos UI.", "success")
+            return redirect(url_for("ui.dashboard"))
         except Exception as e:
             traceback.print_exc()
-            flash(f"Connection failed: {str(e)}", "danger")
-            return render_template("login.html")
+            err_str = str(e)
+            if "Owner resource does not exist" in err_str or "NotFound" in err_str:
+                flash(
+                    f"Cosmos DB system database '{SYSTEM_DB}' or container '{USER_CONTAINER}' does not exist, and your Service Principal does not have permission to create databases/containers. "
+                    f"Please either: (1) Manually create Database '{SYSTEM_DB}' and Containers '{USER_CONTAINER}' (PK: {USER_PK_PATH}) and '{LOGS_CONTAINER}' (PK: {LOGS_PK_PATH}) in Azure Portal, or "
+                    f"(2) Set environment variable COSMOS_AUTH_DB to an existing database your Service Principal can access.",
+                    "danger"
+                )
+            else:
+                flash(f"Failed to create admin account: {err_str}", "danger")
+            return render_template("setup.html")
 
-    return render_template("login.html")
+    return render_template("setup.html")
+
+
+@ui.route("/force-password-reset", methods=["GET", "POST"])
+def force_password_reset():
+    username = session.get("pending_user")
+    if not username:
+        return redirect(url_for("ui.login"))
+
+    client = get_cosmos_client()
+    if request.method == "POST":
+        new_password = request.form.get("new_password", "")
+        confirm_password = request.form.get("confirm_password", "")
+
+        if len(new_password) < 6:
+            flash("New password must be at least 6 characters.", "danger")
+            return render_template("force_password_reset.html")
+        if new_password != confirm_password:
+            flash("Passwords do not match.", "danger")
+            return render_template("force_password_reset.html")
+
+        try:
+            save_user(client=client, username=username, password=new_password, must_change_password=False, update_login=True)
+            user = get_user_by_username(client, username)
+            session.pop("pending_user", None)
+            session["user"] = {
+                "username": user["username"],
+                "display_name": user.get("display_name") or user["username"],
+                "email": user.get("email", ""),
+                "role": user.get("role", "contributor"),
+                "is_authenticated": True
+            }
+            log_activity("auth", "PASSWORD_RESET_FORCED", username, status="SUCCESS", username=username, role=user.get("role"))
+            flash("Password updated successfully! Welcome to Cosmos UI.", "success")
+            return redirect(url_for("ui.dashboard"))
+        except Exception as e:
+            flash(f"Error resetting password: {str(e)}", "danger")
+            return render_template("force_password_reset.html")
+
+    return render_template("force_password_reset.html")
+
+
+@ui.route("/change-my-password", methods=["POST"])
+@login_required
+def change_my_password():
+    client = get_cosmos_client()
+    username = session["user"]["username"]
+    current_password = request.form.get("current_password", "")
+    new_password = request.form.get("new_password", "")
+    confirm_password = request.form.get("confirm_password", "")
+
+    if len(new_password) < 6:
+        flash("New password must be at least 6 characters.", "danger")
+        return redirect(request.referrer or url_for("ui.dashboard"))
+    if new_password != confirm_password:
+        flash("New passwords do not match.", "danger")
+        return redirect(request.referrer or url_for("ui.dashboard"))
+
+    user = get_user_by_username(client, username)
+    if not user or not check_password_hash(user.get("password_hash", ""), current_password):
+        flash("Current password incorrect.", "danger")
+        return redirect(request.referrer or url_for("ui.dashboard"))
+
+    try:
+        save_user(client=client, username=username, password=new_password, must_change_password=False)
+        log_activity("auth", "PASSWORD_CHANGE", username, status="SUCCESS", username=username, role=session["user"]["role"])
+        flash("Your password has been changed successfully.", "success")
+    except Exception as e:
+        flash(f"Error changing password: {str(e)}", "danger")
+
+    return redirect(request.referrer or url_for("ui.dashboard"))
+
 
 @ui.route("/logout")
 def logout():
-    sid = session.get("sid")
-    if sid in CLIENT_STORE:
-        del CLIENT_STORE[sid]
-    session.clear()
-    flash("Logged out successfully.", "info")
+    uname = session.get("user", {}).get("username", "Anonymous")
+    log_activity("auth", "LOGOUT", uname, status="SUCCESS")
+    session.pop("user", None)
+    flash("Signed out successfully.", "info")
     return redirect(url_for("ui.login"))
+
+
+# ---------- Portal Management: User & Role Management (Admin Only) ----------
+
+@ui.route("/users")
+@admin_required
+def users_list():
+    client = get_cosmos_client()
+    users = get_all_users(client)
+    
+    # Load sidebar tree excluding system db
+    databases = [db for db in client.list_databases() if db["id"] != SYSTEM_DB]
+    db_tree = []
+    for db in databases:
+        dbc = client.get_database_client(db["id"])
+        db_tree.append({
+            "id": db["id"],
+            "containers": [c["id"] for c in dbc.list_containers()]
+        })
+
+    return render_template("users.html", users=users, db_tree=db_tree, auth_info=session.get("auth_info"))
+
+
+@ui.route("/users/create", methods=["POST"])
+@admin_required
+def create_user():
+    client = get_cosmos_client()
+    username = request.form.get("username", "").strip()
+    display_name = request.form.get("display_name", "").strip()
+    email = request.form.get("email", "").strip()
+    role = request.form.get("role", "contributor").strip().lower()
+    password = request.form.get("password", "")
+    enforce_reset = bool(request.form.get("enforce_reset"))
+
+    if not username or not password:
+        flash("Username and password are required.", "danger")
+        return redirect(url_for("ui.users_list"))
+
+    existing = get_user_by_username(client, username)
+    if existing:
+        flash(f"User '{username}' already exists.", "warning")
+        return redirect(url_for("ui.users_list"))
+
+    try:
+        save_user(
+            client=client,
+            username=username,
+            password=password,
+            email=email,
+            display_name=display_name,
+            role=role,
+            is_active=True,
+            must_change_password=enforce_reset
+        )
+        log_activity("user_mgmt", "CREATE_USER", username, status="SUCCESS", details=f"Role: {role}, Email: {email}")
+        flash(f"User '{username}' created successfully.", "success")
+    except Exception as e:
+        log_activity("user_mgmt", "CREATE_USER", username, status="FAILED", details=str(e))
+        flash(f"Failed to create user: {str(e)}", "danger")
+
+    return redirect(url_for("ui.users_list"))
+
+
+@ui.route("/users/bulk-create", methods=["POST"])
+@admin_required
+def bulk_create_users():
+    client = get_cosmos_client()
+    uploaded_file = request.files.get("file")
+    if not uploaded_file or not uploaded_file.filename:
+        flash("No file was uploaded.", "warning")
+        return redirect(url_for("ui.users_list"))
+
+    created, skipped, errors = bulk_create_users_from_file(client, uploaded_file, uploaded_file.filename)
+    details = f"Created: {created}, Skipped: {skipped}"
+    if errors:
+        details += f" (Errors: {'; '.join(errors[:3])})"
+
+    log_activity("user_mgmt", "BULK_CREATE_USERS", uploaded_file.filename, status="SUCCESS" if created > 0 else "FAILED", details=details)
+
+    msg = f"Bulk import complete: {created} user(s) created."
+    if skipped > 0:
+        msg += f" {skipped} skipped. {'; '.join(errors)}"
+    flash(msg, "success" if created > 0 else "warning")
+    return redirect(url_for("ui.users_list"))
+
+
+@ui.route("/users/edit", methods=["POST"])
+@admin_required
+def edit_user():
+    client = get_cosmos_client()
+    username = request.form.get("username", "").strip()
+    display_name = request.form.get("display_name", "").strip()
+    email = request.form.get("email", "").strip()
+    role = request.form.get("role", "contributor").strip().lower()
+
+    try:
+        save_user(client=client, username=username, display_name=display_name, email=email, role=role)
+        if session.get("user", {}).get("username") == username:
+            session["user"]["display_name"] = display_name or username
+            session["user"]["email"] = email
+            session["user"]["role"] = role
+
+        log_activity("user_mgmt", "EDIT_USER", username, status="SUCCESS", details=f"Role: {role}, Email: {email}")
+        flash(f"User '{username}' updated successfully.", "success")
+    except Exception as e:
+        log_activity("user_mgmt", "EDIT_USER", username, status="FAILED", details=str(e))
+        flash(f"Failed to update user: {str(e)}", "danger")
+
+    return redirect(url_for("ui.users_list"))
+
+
+@ui.route("/users/reset-password", methods=["POST"])
+@admin_required
+def reset_user_password():
+    client = get_cosmos_client()
+    username = request.form.get("username", "").strip()
+    new_password = request.form.get("new_password", "")
+    enforce_reset = bool(request.form.get("enforce_reset"))
+
+    if len(new_password) < 6:
+        flash("Password must be at least 6 characters.", "danger")
+        return redirect(url_for("ui.users_list"))
+
+    try:
+        save_user(client=client, username=username, password=new_password, must_change_password=enforce_reset)
+        log_activity("user_mgmt", "RESET_PASSWORD", username, status="SUCCESS", details=f"Enforce Reset: {enforce_reset}")
+        flash(f"Password for '{username}' has been reset.", "success")
+    except Exception as e:
+        log_activity("user_mgmt", "RESET_PASSWORD", username, status="FAILED", details=str(e))
+        flash(f"Failed to reset password: {str(e)}", "danger")
+
+    return redirect(url_for("ui.users_list"))
+
+
+@ui.route("/users/toggle-status", methods=["POST"])
+@admin_required
+def toggle_user_status():
+    client = get_cosmos_client()
+    username = request.form.get("username", "").strip()
+    is_active_val = request.form.get("is_active", "1") == "1"
+
+    if username == session.get("user", {}).get("username") and not is_active_val:
+        flash("You cannot disable your own administrator account.", "warning")
+        return redirect(url_for("ui.users_list"))
+
+    try:
+        save_user(client=client, username=username, is_active=is_active_val)
+        status_name = "enabled" if is_active_val else "disabled"
+        log_activity("user_mgmt", f"{'ENABLE' if is_active_val else 'DISABLE'}_USER", username, status="SUCCESS")
+        flash(f"Account for '{username}' has been {status_name}.", "success")
+    except Exception as e:
+        log_activity("user_mgmt", "TOGGLE_STATUS_USER", username, status="FAILED", details=str(e))
+        flash(f"Failed to update status: {str(e)}", "danger")
+
+    return redirect(url_for("ui.users_list"))
+
+
+@ui.route("/users/delete", methods=["POST"])
+@admin_required
+def delete_user():
+    client = get_cosmos_client()
+    username = request.form.get("username", "").strip()
+
+    if username == session.get("user", {}).get("username"):
+        flash("You cannot delete your own administrator account.", "warning")
+        return redirect(url_for("ui.users_list"))
+
+    try:
+        delete_user_by_username(client, username)
+        log_activity("user_mgmt", "DELETE_USER", username, status="SUCCESS")
+        flash(f"User '{username}' deleted successfully.", "success")
+    except Exception as e:
+        log_activity("user_mgmt", "DELETE_USER", username, status="FAILED", details=str(e))
+        flash(f"Failed to delete user: {str(e)}", "danger")
+
+    return redirect(url_for("ui.users_list"))
+
+
+@ui.route("/users/template.csv")
+@admin_required
+def download_user_template():
+    csv_data = "username,email,password,enforcepasswordreset,role,display_name\n"
+    csv_data += "john,john@example.com,Password123!,yes,contributor,John Doe\n"
+    csv_data += "sarah,sarah@example.com,TempPass456!,yes,reader,Sarah Smith\n"
+    csv_data += "admin2,admin2@example.com,SecureAdmin789!,no,admin,Second Admin\n"
+    return Response(
+        csv_data,
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment;filename=users_import_template.csv"}
+    )
+
+
+# ---------- Portal Management: Activity Logs (Admin Only) ----------
+
+@ui.route("/activity-logs")
+@admin_required
+def activity_logs():
+    client = get_cosmos_client()
+    filter_service = request.args.get("service", "all")
+    filter_username = request.args.get("username", "")
+    filter_status = request.args.get("status", "all")
+    from_date = request.args.get("from_date", "")
+    to_date = request.args.get("to_date", "")
+
+    logs = query_activity_logs(
+        client=client,
+        service=filter_service,
+        username=filter_username,
+        status=filter_status,
+        from_date=from_date,
+        to_date=to_date,
+        limit=250
+    )
+
+    # Load sidebar tree excluding system db
+    databases = [db for db in client.list_databases() if db["id"] != SYSTEM_DB]
+    db_tree = []
+    for db in databases:
+        dbc = client.get_database_client(db["id"])
+        db_tree.append({
+            "id": db["id"],
+            "containers": [c["id"] for c in dbc.list_containers()]
+        })
+
+    return render_template(
+        "activity_logs.html",
+        logs=logs,
+        filter_service=filter_service,
+        filter_username=filter_username,
+        filter_status=filter_status,
+        from_date=from_date,
+        to_date=to_date,
+        db_tree=db_tree,
+        auth_info=session.get("auth_info")
+    )
+
+
+@ui.route("/activity-logs/export")
+@admin_required
+def export_activity_logs():
+    client = get_cosmos_client()
+    fmt = request.args.get("format", "csv").lower()
+    filter_service = request.args.get("service", "all")
+    filter_username = request.args.get("username", "")
+    filter_status = request.args.get("status", "all")
+    from_date = request.args.get("from_date", "")
+    to_date = request.args.get("to_date", "")
+
+    logs = query_activity_logs(
+        client=client,
+        service=filter_service,
+        username=filter_username,
+        status=filter_status,
+        from_date=from_date,
+        to_date=to_date,
+        limit=2000
+    )
+
+    if fmt == "json":
+        clean_logs = []
+        for l in logs:
+            c = dict(l)
+            c.pop("_rid", None)
+            c.pop("_self", None)
+            c.pop("_etag", None)
+            c.pop("_attachments", None)
+            c.pop("_ts", None)
+            clean_logs.append(c)
+        return Response(
+            json.dumps(clean_logs, indent=2),
+            mimetype="application/json",
+            headers={"Content-Disposition": "attachment;filename=cosmos_activity_logs.json"}
+        )
+    else: # CSV
+        out = io.StringIO()
+        writer = csv.writer(out)
+        writer.writerow(["Timestamp (UTC)", "Username", "Role", "Service", "Action", "Target", "Status", "Details", "Client IP"])
+        for l in logs:
+            writer.writerow([
+                l.get("timestamp_formatted") or l.get("timestamp", ""),
+                l.get("username", ""),
+                l.get("role", ""),
+                l.get("service", ""),
+                l.get("action", ""),
+                l.get("target", ""),
+                l.get("status", ""),
+                l.get("details", ""),
+                l.get("ip_address", "")
+            ])
+        return Response(
+            out.getvalue().encode("utf-8-sig"),
+            mimetype="text/csv",
+            headers={"Content-Disposition": "attachment;filename=cosmos_activity_logs.csv"}
+        )
+
+
+# ---------- Dashboard & Explorer ----------
 
 @ui.route("/")
 @ui.route("/dashboard")
 @login_required
 def dashboard():
-    store = get_store()
-    client = store["client"]
+    client = get_cosmos_client()
     try:
-        databases = list(client.list_databases())
+        databases = [db for db in client.list_databases() if db["id"] != SYSTEM_DB]
         db_tree = []
         for db in databases:
             db_client = client.get_database_client(db["id"])
@@ -837,8 +1817,10 @@ def run_export_worker(task_id, file_path, filename, format_type, db_id, containe
 @ui.route("/db/<db_id>/container/<container_id>")
 @login_required
 def container_view(db_id, container_id):
-    store = get_store()
-    client = store["client"]
+    client = get_cosmos_client()
+    if not client:
+        flash("Cosmos DB is not connected.", "warning")
+        return redirect(url_for("ui.login"))
     
     # Query parameters
     page = request.args.get("page", 1, type=int)
@@ -943,8 +1925,8 @@ def container_view(db_id, container_id):
         effective_total = total_items if total_items is not None else len(processed_items)
         total_pages = max(1, (effective_total + limit - 1) // limit)
 
-        # Database tree for sidebar quick-nav
-        databases = list(client.list_databases())
+        # Database tree for sidebar quick-nav excluding system db
+        databases = [db for db in client.list_databases() if db["id"] != SYSTEM_DB]
         db_tree = []
         for db in databases:
             dbc = client.get_database_client(db["id"])
@@ -980,11 +1962,10 @@ def container_view(db_id, container_id):
 # ---------- API Endpoints ----------
 
 @ui.route("/api/db/<db_id>/container/<container_id>/item", methods=["POST"])
-@login_required
+@write_permission_required
 def api_upsert_item(db_id, container_id):
     """Create or Update an item in Cosmos DB (Upsert)"""
-    store = get_store()
-    client = store["client"]
+    client = get_cosmos_client()
     
     try:
         data = request.get_json()
@@ -1009,18 +1990,19 @@ def api_upsert_item(db_id, container_id):
             
         # Execute Upsert with 429 retry
         res, _ = execute_with_429_retry(container.upsert_item, body=data)
+        log_activity("cosmos_db", "UPSERT_DOCUMENT", f"{db_id}/{container_id}/{data.get('id')}", status="SUCCESS")
         return jsonify({"status": "success", "message": "Document saved successfully", "item": res})
 
     except Exception as e:
         traceback.print_exc()
+        log_activity("cosmos_db", "UPSERT_DOCUMENT", f"{db_id}/{container_id}/{data.get('id', 'unknown')}", status="FAILED", details=str(e))
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @ui.route("/api/db/<db_id>/container/<container_id>/item/delete", methods=["POST"])
-@login_required
+@write_permission_required
 def api_delete_item(db_id, container_id):
     """Delete an item from Cosmos DB"""
-    store = get_store()
-    client = store["client"]
+    client = get_cosmos_client()
     
     try:
         data = request.get_json()
@@ -1035,18 +2017,19 @@ def api_delete_item(db_id, container_id):
         
         # Delete item with 429 retry
         execute_with_429_retry(container.delete_item, item=item_id, partition_key=partition_key)
+        log_activity("cosmos_db", "DELETE_DOCUMENT", f"{db_id}/{container_id}/{item_id}", status="SUCCESS")
         return jsonify({"status": "success", "message": "Document deleted successfully."})
 
     except Exception as e:
         traceback.print_exc()
+        log_activity("cosmos_db", "DELETE_DOCUMENT", f"{db_id}/{container_id}/{data.get('id', 'unknown')}", status="FAILED", details=str(e))
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @ui.route("/api/db/<db_id>/container/<container_id>/items/bulk-delete", methods=["POST"])
-@login_required
+@write_permission_required
 def api_bulk_delete_items(db_id, container_id):
     """Bulk delete a list of items from Cosmos DB with 429 rate limit backoff"""
-    store = get_store()
-    client = store["client"]
+    client = get_cosmos_client()
     try:
         data = request.get_json()
         if not data or "items" not in data:
@@ -1094,6 +2077,7 @@ def api_bulk_delete_items(db_id, container_id):
         if failed_count > 0:
             msg += f" {failed_count} item(s) failed."
             
+        log_activity("cosmos_db", "BULK_DELETE", f"{db_id}/{container_id}", status="SUCCESS" if deleted_count > 0 else "FAILED", details=f"Deleted: {deleted_count}, Failed: {failed_count}")
         return jsonify({
             "status": "success" if deleted_count > 0 else "error",
             "message": msg,
@@ -1107,11 +2091,10 @@ def api_bulk_delete_items(db_id, container_id):
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @ui.route("/api/db/<db_id>/container/<container_id>/import-async", methods=["POST"])
-@login_required
+@write_permission_required
 def api_async_import_items(db_id, container_id):
     """Initiates an asynchronous background bulk ingestion task with live progress tracking"""
-    store = get_store()
-    client = store["client"]
+    client = get_cosmos_client()
     
     file = request.files.get("file")
     if not file or file.filename == "":
@@ -1173,6 +2156,7 @@ def api_async_import_items(db_id, container_id):
         )
         worker_thread.start()
         
+        log_activity("cosmos_db", "BULK_IMPORT_START", f"{db_id}/{container_id}", status="SUCCESS", details=f"File: {filename}, Concurrency: {concurrency}")
         return jsonify({
             "status": "success",
             "task_id": task_id,
@@ -1214,7 +2198,7 @@ def api_get_import_task(task_id):
         })
 
 @ui.route("/api/import-task/<task_id>/cancel", methods=["POST"])
-@login_required
+@write_permission_required
 def api_cancel_import_task(task_id):
     """Requests graceful cancellation of a running bulk import task"""
     with IMPORT_TASKS_LOCK:
@@ -1224,17 +2208,17 @@ def api_cancel_import_task(task_id):
         task["cancel_requested"] = True
         task["status"] = "cancelled"
         task["end_time"] = time.time()
+        log_activity("cosmos_db", "BULK_IMPORT_CANCEL", f"{task.get('db_id')}/{task.get('container_id')}", status="SUCCESS", details=f"Task: {task_id}")
         return jsonify({"status": "success", "message": "Cancellation requested."})
 
 @ui.route("/api/db/<db_id>/container/<container_id>/empty", methods=["POST"])
-@login_required
+@write_permission_required
 def api_empty_container(db_id, container_id):
     """
     Empties all documents from a container by recreating it with identical schema/configuration
     or by bulk-deleting all documents.
     """
-    store = get_store()
-    client = store["client"]
+    client = get_cosmos_client()
     try:
         db_client = client.get_database_client(db_id)
         container = db_client.get_container_client(container_id)
@@ -1264,6 +2248,7 @@ def api_empty_container(db_id, container_id):
                 create_kwargs["unique_key_policy"] = unique_key_policy
                 
             db_client.create_container(**create_kwargs)
+            log_activity("cosmos_db", "EMPTY_CONTAINER", f"{db_id}/{container_id}", status="SUCCESS", details="Container recreated with original schema")
             return jsonify({
                 "status": "success",
                 "message": f"Container '{container_id}' was emptied successfully (recreated with original schema)."
@@ -1280,6 +2265,7 @@ def api_empty_container(db_id, container_id):
                     deleted_count += 1
                 except Exception:
                     pass
+            log_activity("cosmos_db", "EMPTY_CONTAINER", f"{db_id}/{container_id}", status="SUCCESS", details=f"Truncated {deleted_count} items")
             return jsonify({
                 "status": "success",
                 "message": f"Emptied {deleted_count} document(s) from container '{container_id}'."
@@ -1287,14 +2273,14 @@ def api_empty_container(db_id, container_id):
             
     except Exception as e:
         traceback.print_exc()
+        log_activity("cosmos_db", "EMPTY_CONTAINER", f"{db_id}/{container_id}", status="FAILED", details=str(e))
         return jsonify({"status": "error", "message": f"Failed to empty container: {str(e)}"}), 500
 
 @ui.route("/api/db/<db_id>/container/<container_id>/export-async", methods=["POST"])
 @login_required
 def api_async_export_items(db_id, container_id):
     """Initiates an asynchronous background export task with live progress tracking"""
-    store = get_store()
-    client = store["client"]
+    client = get_cosmos_client()
 
     try:
         data = request.get_json() or {}
@@ -1344,6 +2330,7 @@ def api_async_export_items(db_id, container_id):
             daemon=True
         )
         worker_thread.start()
+        log_activity("cosmos_db", "EXPORT_DATA", f"{db_id}/{container_id}", status="SUCCESS", details=f"Format: {format_type}, File: {filename}")
 
         return jsonify({
             "status": "success",
@@ -1355,7 +2342,6 @@ def api_async_export_items(db_id, container_id):
     except Exception as e:
         traceback.print_exc()
         return jsonify({"status": "error", "message": f"Failed to start export: {str(e)}"}), 500
-
 
 @ui.route("/api/export-task/<task_id>", methods=["GET"])
 @login_required
@@ -1383,7 +2369,6 @@ def api_get_export_task(task_id):
             }
         })
 
-
 @ui.route("/api/export-task/<task_id>/cancel", methods=["POST"])
 @login_required
 def api_cancel_export_task(task_id):
@@ -1395,8 +2380,8 @@ def api_cancel_export_task(task_id):
         task["cancel_requested"] = True
         task["status"] = "cancelled"
         task["end_time"] = time.time()
+        log_activity("cosmos_db", "EXPORT_CANCEL", f"{task.get('db_id')}/{task.get('container_id')}", status="SUCCESS", details=f"Task: {task_id}")
         return jsonify({"status": "success", "message": "Export cancellation requested."})
-
 
 @ui.route("/api/export-task/<task_id>/download", methods=["GET"])
 @login_required
@@ -1433,11 +2418,10 @@ def api_download_export_task(task_id):
     )
 
 @ui.route("/db/<db_id>/container/<container_id>/import", methods=["POST"])
-@login_required
+@write_permission_required
 def import_items(db_id, container_id):
     """Synchronous import fallback handling JSON, JSONL, CSV, and XLSX with 429 retries"""
-    store = get_store()
-    client = store["client"]
+    client = get_cosmos_client()
     
     file = request.files.get("file")
     if not file or file.filename == "":
@@ -1490,6 +2474,7 @@ def import_items(db_id, container_id):
             flash(msg, "warning")
         else:
             flash(msg, "success")
+        log_activity("cosmos_db", "SYNC_IMPORT", f"{db_id}/{container_id}", status="SUCCESS" if imported_count > 0 else "FAILED", details=f"Imported: {imported_count}, Skipped: {skipped_count}")
 
     except Exception as e:
         traceback.print_exc()
@@ -1498,11 +2483,10 @@ def import_items(db_id, container_id):
     return redirect(url_for("ui.container_view", db_id=db_id, container_id=container_id))
 
 @ui.route("/api/provision", methods=["POST"])
-@login_required
+@write_permission_required
 def api_provision():
     """Provision a new Database and optionally a Container inside it"""
-    store = get_store()
-    client = store["client"]
+    client = get_cosmos_client()
     try:
         data = request.get_json()
         if not data:
@@ -1544,6 +2528,7 @@ def api_provision():
             client.create_database_if_not_exists(id=db_id)
             msg = f"Successfully created database '{db_id}'."
             
+        log_activity("cosmos_db", "PROVISION_STRUCTURE", f"{db_id}/{container_id}" if container_id else db_id, status="SUCCESS")
         return jsonify({
             "status": "success", 
             "message": msg
@@ -1553,38 +2538,39 @@ def api_provision():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @ui.route("/api/db/<db_id>/delete", methods=["POST"])
-@login_required
+@admin_required
 def api_delete_database(db_id):
-    """Delete a Database from Cosmos DB"""
-    store = get_store()
-    client = store["client"]
+    """Delete a Database from Cosmos DB (Admin Only)"""
+    client = get_cosmos_client()
     try:
         client.delete_database(db_id)
+        log_activity("cosmos_db", "DELETE_DATABASE", db_id, status="SUCCESS")
         return jsonify({"status": "success", "message": f"Database '{db_id}' deleted successfully."})
     except Exception as e:
         traceback.print_exc()
+        log_activity("cosmos_db", "DELETE_DATABASE", db_id, status="FAILED", details=str(e))
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @ui.route("/api/db/<db_id>/container/<container_id>/delete", methods=["POST"])
-@login_required
+@admin_required
 def api_delete_container(db_id, container_id):
-    """Delete a Container from a Database"""
-    store = get_store()
-    client = store["client"]
+    """Delete a Container from a Database (Admin Only)"""
+    client = get_cosmos_client()
     try:
         db_client = client.get_database_client(db_id)
         db_client.delete_container(container_id)
+        log_activity("cosmos_db", "DELETE_CONTAINER", f"{db_id}/{container_id}", status="SUCCESS")
         return jsonify({"status": "success", "message": f"Container '{container_id}' deleted successfully from database '{db_id}'."})
     except Exception as e:
         traceback.print_exc()
+        log_activity("cosmos_db", "DELETE_CONTAINER", f"{db_id}/{container_id}", status="FAILED", details=str(e))
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @ui.route("/api/bulk-check", methods=["POST"])
-@login_required
+@write_permission_required
 def api_bulk_check():
     """Parse bulk upload file and check for existing databases"""
-    store = get_store()
-    client = store["client"]
+    client = get_cosmos_client()
     
     file = request.files.get("file")
     if not file or file.filename == "":
@@ -1638,7 +2624,7 @@ def api_bulk_check():
             if db_name:
                 uploaded_dbs.add(db_name)
                 
-        existing_cosmos_dbs = {db["id"] for db in client.list_databases()}
+        existing_cosmos_dbs = {db["id"] for db in client.list_databases() if db["id"] != SYSTEM_DB}
         overlap = list(uploaded_dbs.intersection(existing_cosmos_dbs))
         
         return jsonify({"status": "success", "existing_dbs": overlap})
@@ -1648,11 +2634,10 @@ def api_bulk_check():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @ui.route("/bulk-create", methods=["POST"])
-@login_required
+@write_permission_required
 def bulk_create_dbs_containers():
     """Bulk provision databases and containers from CSV or Excel (.xlsx) file"""
-    store = get_store()
-    client = store["client"]
+    client = get_cosmos_client()
     
     file = request.files.get("file")
     if not file or file.filename == "":
@@ -1762,6 +2747,7 @@ def bulk_create_dbs_containers():
             flash(msg, "warning")
         else:
             flash(msg, "success")
+        log_activity("cosmos_db", "BULK_PROVISION", file.filename, status="SUCCESS" if len(created_containers) > 0 else "FAILED", details=f"Databases: {len(created_dbs)}, Containers: {len(created_containers)}")
             
     except Exception as e:
         traceback.print_exc()

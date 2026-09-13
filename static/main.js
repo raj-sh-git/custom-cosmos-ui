@@ -199,6 +199,7 @@ function formatEditorJson() {
 function openCreateModal() {
     activeEditMode = "create";
     document.getElementById('modalTitle').textContent = "Create New Document";
+    if (textarea) textarea.readOnly = false;
     
     // Create template skeleton
     const skeleton = {
@@ -220,7 +221,9 @@ function openCreateModal() {
 
 function openEditModal(rawItem) {
     activeEditMode = "edit";
-    document.getElementById('modalTitle').textContent = "Edit Document: " + rawItem.id;
+    const isReader = typeof CONFIG !== 'undefined' && CONFIG.isReader;
+    document.getElementById('modalTitle').textContent = (isReader ? "View Document: " : "Edit Document: ") + (rawItem.id || "");
+    if (textarea) textarea.readOnly = isReader;
     textarea.value = JSON.stringify(rawItem, null, 2);
     setEditorError(false);
     openModal('documentModal');
@@ -1249,4 +1252,46 @@ function downloadAndCloseExportModal() {
         window.location.href = `/cosmos-ui/api/export-task/${activeExportTaskId}/download`;
     }
     closeModal('exportProgressModal');
+}
+
+// =========================================================================
+// --- 21. Change Password Modal Helpers ---
+// =========================================================================
+function openChangePasswordModal() {
+    const cur = document.getElementById("current_password");
+    const np = document.getElementById("new_password");
+    const cp = document.getElementById("confirm_password");
+    const err = document.getElementById("changePasswordError");
+    if (cur) cur.value = "";
+    if (np) np.value = "";
+    if (cp) cp.value = "";
+    if (err) {
+        err.style.display = "none";
+        err.textContent = "";
+    }
+    openModal("changePasswordModal");
+}
+
+function validateChangePassword(e) {
+    const np = document.getElementById("new_password").value;
+    const cp = document.getElementById("confirm_password").value;
+    const err = document.getElementById("changePasswordError");
+    
+    if (np.length < 6) {
+        if (err) {
+            err.textContent = "New password must be at least 6 characters long.";
+            err.style.display = "block";
+        }
+        e.preventDefault();
+        return false;
+    }
+    if (np !== cp) {
+        if (err) {
+            err.textContent = "New password and confirmation do not match.";
+            err.style.display = "block";
+        }
+        e.preventDefault();
+        return false;
+    }
+    return true;
 }

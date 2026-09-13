@@ -109,11 +109,13 @@
                     <span>Export Data</span>
                 </button>
 
+                {% if not is_reader %}
                 <!-- Import Trigger -->
                 <button class="btn btn-primary" onclick="openImportModal()">
                     <i class="fa-solid fa-file-arrow-up"></i>
                     <span>Bulk Import</span>
                 </button>
+                {% endif %}
             </div>
         </div>
     </div>
@@ -121,6 +123,7 @@
     <!-- Toolbar: Create Document, Selection Bar, & Delete Container -->
     <div class="table-toolbar margin-top-md" style="display: flex; justify-content: space-between; align-items: center; width: 100%; flex-wrap: wrap; gap: 10px;">
         <div style="display: flex; align-items: center; gap: 10px;">
+            {% if not is_reader %}
             <button class="btn btn-primary btn-create" onclick="openCreateModal()">
                 <i class="fa-solid fa-plus"></i>
                 <span>Create Document</span>
@@ -137,18 +140,23 @@
                     <i class="fa-solid fa-xmark"></i>
                 </button>
             </div>
+            {% endif %}
         </div>
 
+        {% if not is_reader %}
         <div style="display: flex; align-items: center; gap: 8px;">
             <button class="btn btn-neutral" style="border-color: rgba(239, 68, 68, 0.4); color: #f87171;" onclick="openEmptyContainerModal()" title="Delete all documents inside this container">
                 <i class="fa-solid fa-broom"></i>
                 <span>Empty Container</span>
             </button>
+            {% if is_admin %}
             <button class="btn btn-danger" onclick="confirmDeleteContainer('{{ db_id }}', '{{ container_id }}')">
                 <i class="fa-solid fa-trash-can"></i>
                 <span>Delete Container</span>
             </button>
+            {% endif %}
         </div>
+        {% endif %}
     </div>
 
     <!-- Main Documents Table -->
@@ -158,13 +166,15 @@
                 <thead>
                     <tr>
                         {% if not is_custom_projection %}
+                            {% if not is_reader %}
                             <th width="40px" class="text-center">
                                 <input type="checkbox" id="selectAllDocs" class="table-checkbox" onchange="toggleSelectAllDocs(this)" title="Select all on this page">
                             </th>
-                            <th width="28%">Document ID</th>
-                            <th width="28%">Partition Key Value ({{ pk_path }})</th>
-                            <th width="30%">Content Summary</th>
-                            <th width="14%" class="text-right">Actions</th>
+                            {% endif %}
+                            <th width="{% if not is_reader %}28%{% else %}30%{% endif %}">Document ID</th>
+                            <th width="{% if not is_reader %}28%{% else %}30%{% endif %}">Partition Key Value ({{ pk_path }})</th>
+                            <th width="{% if not is_reader %}30%{% else %}32%{% endif %}">Content Summary</th>
+                            <th width="{% if not is_reader %}14%{% else %}8%{% endif %}" class="text-right">Actions</th>
                         {% else %}
                             <!-- Dynamic Columns for Custom Projections / Aggregations -->
                             {% for col in custom_columns %}
@@ -180,12 +190,14 @@
                         <tr id="row-{{ loop.index }}" class="document-row">
                             {% if not is_custom_projection %}
                                 <!-- Checkbox Selection -->
+                                {% if not is_reader %}
                                 <td class="text-center">
                                     <input type="checkbox" class="doc-select-checkbox table-checkbox" 
                                            data-id="{{ item.id }}" 
                                            data-pk="{{ item.pk_val|tojson|forceescape if item.pk_val is not none else 'null' }}"
                                            onchange="updateDocSelection()">
                                 </td>
+                                {% endif %}
                                 <td class="font-semibold text-white">
                                     <a href="javascript:void(0)" onclick="openEditModal({{ item.raw|tojson|forceescape }})" class="id-link">
                                         <i class="fa-regular fa-file-code file-icon"></i>
@@ -212,12 +224,18 @@
                                 </td>
                                 <td class="text-right">
                                     <div class="action-buttons-group">
+                                        {% if not is_reader %}
                                         <button class="btn-action btn-edit" title="Edit JSON" onclick="openEditModal({{ item.raw|tojson|forceescape }})">
                                             <i class="fa-solid fa-pen-to-square"></i>
                                         </button>
                                         <button class="btn-action btn-delete" title="Delete Document" onclick="confirmDelete('{{ item.id }}', {{ item.pk_val|tojson|forceescape if item.pk_val is not none else 'null' }})">
                                             <i class="fa-regular fa-trash-can"></i>
                                         </button>
+                                        {% else %}
+                                        <button class="btn-action btn-edit" title="View JSON" onclick="openEditModal({{ item.raw|tojson|forceescape }})">
+                                            <i class="fa-solid fa-eye"></i>
+                                        </button>
+                                        {% endif %}
                                     </div>
                                 </td>
                             {% else %}
@@ -244,7 +262,7 @@
                         {% endfor %}
                     {% else %}
                         <tr>
-                            <td colspan="{% if is_custom_projection %}{{ custom_columns|length + 1 }}{% else %}5{% endif %}" class="table-empty-state">
+                            <td colspan="{% if is_custom_projection %}{{ custom_columns|length + 1 }}{% else %}{% if not is_reader %}5{% else %}4{% endif %}{% endif %}" class="table-empty-state">
                                 {% if query_error %}
                                     <i class="fa-solid fa-triangle-exclamation empty-icon text-danger"></i>
                                     <h4 class="text-danger">Query Execution Failed</h4>
@@ -342,11 +360,13 @@
             </div>
 
             <div class="modal-footer">
-                <button class="btn btn-neutral" onclick="closeModal('documentModal')">Cancel</button>
+                <button class="btn btn-neutral" onclick="closeModal('documentModal')">{% if is_reader %}Close{% else %}Cancel{% endif %}</button>
+                {% if not is_reader %}
                 <button class="btn btn-primary" id="btnSaveDocument" onclick="saveDocument()">
                     <i class="fa-solid fa-cloud-arrow-up"></i>
                     <span>Save Document</span>
                 </button>
+                {% endif %}
             </div>
         </div>
     </div>
@@ -719,7 +739,8 @@
         containerId: "{{ container_id }}",
         pkPath: "{{ pk_path }}",
         cleanPk: "{{ pk_path.strip('/') }}",
-        totalItems: {{ total_items }}
+        totalItems: {{ total_items }},
+        isReader: {{ 'true' if is_reader else 'false' }}
     };
 </script>
 {% endblock %}

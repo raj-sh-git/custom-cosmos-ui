@@ -1,10 +1,10 @@
 {% extends "base.html" %}
 
-{% block title %}Connect to Cosmos DB - CosmosUI{% endblock %}
+{% block title %}{% if cosmos_connected %}Sign In - CosmosUI{% else %}Connect to Cosmos DB - CosmosUI{% endif %}{% endblock %}
 
 {% block content %}
 <div class="auth-container">
-    <div class="auth-card" style="position: relative;">
+    <div class="auth-card" style="position: relative; max-width: 480px;">
         <!-- Theme Toggle Switch for Login Card -->
         <div style="position: absolute; top: 20px; right: 20px; z-index: 10;">
             <button id="themeToggle" class="btn-theme-toggle" onclick="toggleTheme()" title="Toggle Theme" type="button">
@@ -34,162 +34,158 @@
                         <span>v2.1</span>
                         <i class="fa-solid fa-sparkles" style="margin-left: 3px; font-size: 8.5px; opacity: 0.85;"></i>
                     </div>
-                    <div class="version-popover glass-card">
-                        <div class="version-popover-header">
-                            <div class="version-title-wrap">
-                                <span class="version-title">Cosmos UI v2.1</span>
-                                <span class="version-date">Changelog</span>
-                            </div>
-                            <span class="badge badge-blue">Latest</span>
-                        </div>
-                        <ul class="version-changelog-list">
-                            <li>
-                                <i class="fa-solid fa-check-double text-success"></i>
-                                <div class="changelog-content">
-                                    <strong>Multi-Select Bulk Deletion:</strong> Select multiple documents via checkboxes with automatic 429 retry backoff.
-                                </div>
-                            </li>
-                            <li>
-                                <i class="fa-solid fa-terminal text-info"></i>
-                                <div class="changelog-content">
-                                    <strong>Full Cosmos SQL Console:</strong> Run any query with <code>GROUP BY</code>, <code>TOP</code>, custom projections & aggregations.
-                                </div>
-                            </li>
-                            <li>
-                                <i class="fa-solid fa-gauge-high text-warning"></i>
-                                <div class="changelog-content">
-                                    <strong>20L+ Scalable Pagination:</strong> Smart count caching eliminates 2M-record count overhead on page turns.
-                                </div>
-                            </li>
-                            <li>
-                                <i class="fa-solid fa-bolt text-success"></i>
-                                <div class="changelog-content">
-                                    <strong>High-Throughput Streaming Ingestion:</strong> Continuous worker queue for 400k+ records with live progress & speed tracking.
-                                </div>
-                            </li>
-                            <li>
-                                <i class="fa-solid fa-file-arrow-down text-primary"></i>
-                                <div class="changelog-content">
-                                    <strong>20L+ Streaming Export:</strong> Non-blocking export for JSON, JSONL/NDJSON, CSV & Excel with live progress & 429 retries.
-                                </div>
-                            </li>
-                            <li>
-                                <i class="fa-solid fa-broom text-danger"></i>
-                                <div class="changelog-content">
-                                    <strong>Empty Container Purge:</strong> One-click instant container wipe preserving partition key & schema.
-                                </div>
-                            </li>
-                            <li>
-                                <i class="fa-solid fa-ban text-info"></i>
-                                <div class="changelog-content">
-                                    <strong>Instant Job Cancellation:</strong> Fast non-blocking sub-200ms background thread stopping.
-                                </div>
-                            </li>
-                        </ul>
-                    </div>
                 </div>
             </div>
-            <p>Access your Cosmos DB containers with ease. Set up a secure direct connection below.</p>
+            <p>{% if cosmos_connected %}Sign in with your user credentials to access your Cosmos DB workspace.{% else %}Connect to your Azure Cosmos DB instance below to get started.{% endif %}</p>
         </div>
 
-        <form action="{{ url_for('ui.login') }}" method="POST" class="auth-form" id="loginForm">
-            <!-- Auth Method Tab Selectors -->
-            <div class="auth-tabs">
-                <label class="auth-tab">
-                    <input type="radio" name="auth_method" value="conn_str" checked onclick="switchAuthTab('conn_str')">
-                    <div class="tab-button">
-                        <i class="fa-solid fa-link"></i>
-                        <span>Connection String</span>
-                    </div>
-                </label>
-                <label class="auth-tab">
-                    <input type="radio" name="auth_method" value="key" onclick="switchAuthTab('key')">
-                    <div class="tab-button">
-                        <i class="fa-solid fa-key"></i>
-                        <span>Account Key</span>
-                    </div>
-                </label>
-                <label class="auth-tab">
-                    <input type="radio" name="auth_method" value="sp" onclick="switchAuthTab('sp')">
-                    <div class="tab-button">
-                        <i class="fa-solid fa-users-gear"></i>
-                        <span>Service Principal</span>
-                    </div>
-                </label>
-            </div>
-
-            <!-- Tab 1: Connection String -->
-            <div class="form-group-tab active" id="tab-conn_str">
+        {% if cosmos_connected %}
+        <!-- Day 1 User Sign-In Form -->
+        <div id="userAuthSection">
+            <form action="{{ url_for('ui.login') }}" method="POST" class="auth-form" id="userLoginForm">
+                <input type="hidden" name="login_type" value="user_auth">
+                
                 <div class="input-wrapper">
-                    <label for="conn_string">Cosmos DB Connection String</label>
+                    <label for="username">Username</label>
                     <div class="input-icon-group">
-                        <i class="fa-solid fa-plug icon-inside"></i>
-                        <textarea name="conn_string" id="conn_string" placeholder="AccountEndpoint=https://your-account.documents.azure.com:443/;AccountKey=your-key;"></textarea>
-                    </div>
-                    <span class="help-text">Enter the full Azure Cosmos DB connection string (Primary or Secondary).</span>
-                </div>
-            </div>
-
-            <!-- Tab 2: Account Key -->
-            <div class="form-group-tab" id="tab-key">
-                <div class="input-wrapper">
-                    <label for="endpoint_key">Endpoint URI</label>
-                    <div class="input-icon-group">
-                        <i class="fa-solid fa-globe icon-inside"></i>
-                        <input type="url" name="endpoint" id="endpoint_key" placeholder="https://your-account.documents.azure.com:443/">
+                        <i class="fa-solid fa-user icon-inside"></i>
+                        <input type="text" name="username" id="username" required autofocus placeholder="e.g. admin or username" style="padding-left: 38px;">
                     </div>
                 </div>
+
                 <div class="input-wrapper">
-                    <label for="account_key">Account Key</label>
+                    <label for="password">Password</label>
                     <div class="input-icon-group">
                         <i class="fa-solid fa-lock icon-inside"></i>
-                        <input type="password" name="account_key" id="account_key" placeholder="your-primary-or-secondary-key">
+                        <input type="password" name="password" id="password" required placeholder="Enter your password" style="padding-left: 38px;">
                     </div>
                 </div>
-            </div>
 
-            <!-- Tab 3: Service Principal -->
-            <div class="form-group-tab" id="tab-sp">
-                <div class="input-wrapper">
-                    <label for="endpoint_sp">Endpoint URI</label>
-                    <div class="input-icon-group">
-                        <i class="fa-solid fa-globe icon-inside"></i>
-                        <input type="url" name="endpoint" id="endpoint_sp" placeholder="https://your-account.documents.azure.com:443/">
-                    </div>
-                </div>
-                <div class="input-wrapper">
-                    <label for="tenant_id">Tenant ID</label>
-                    <div class="input-icon-group">
-                        <i class="fa-solid fa-building icon-inside"></i>
-                        <input type="text" name="tenant_id" id="tenant_id" placeholder="00000000-0000-0000-0000-000000000000">
-                    </div>
-                </div>
-                <div class="input-wrapper">
-                    <label for="client_id">Client ID</label>
-                    <div class="input-icon-group">
-                        <i class="fa-solid fa-id-card icon-inside"></i>
-                        <input type="text" name="client_id" id="client_id" placeholder="00000000-0000-0000-0000-000000000000">
-                    </div>
-                </div>
-                <div class="input-wrapper">
-                    <label for="client_secret">Client Secret</label>
-                    <div class="input-icon-group">
-                        <i class="fa-solid fa-key icon-inside"></i>
-                        <input type="password" name="client_secret" id="client_secret" placeholder="your-service-principal-secret">
-                    </div>
-                </div>
-            </div>
+                <button type="submit" class="btn btn-primary btn-block" style="margin-top: 8px;">
+                    <span>Sign In to Cosmos UI</span>
+                    <i class="fa-solid fa-arrow-right-to-bracket"></i>
+                </button>
+            </form>
 
-            <div class="remember-me">
-                <input type="checkbox" id="remember_credentials" checked>
-                <label for="remember_credentials">Remember Endpoint Details (Saved locally in your browser)</label>
+            <div style="margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--border-color); text-align: center;">
+                <button type="button" class="btn-link" onclick="toggleBackendConfig()" style="background: none; border: none; color: var(--primary); font-size: 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;">
+                    <i class="fa-solid fa-gear"></i>
+                    <span>Switch Cosmos DB Connection</span>
+                </button>
             </div>
+        </div>
+        {% endif %}
 
-            <button type="submit" class="btn btn-primary btn-block">
-                <span>Connect Securely</span>
-                <i class="fa-solid fa-arrow-right-to-bracket"></i>
-            </button>
-        </form>
+        <!-- Cosmos DB Connection Form (Visible on initial setup or via toggle) -->
+        <div id="backendConfigSection" style="{% if cosmos_connected %}display: none; margin-top: 16px; padding-top: 16px; border-top: 1px dashed var(--border-color);{% endif %}">
+            {% if cosmos_connected %}
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                <span style="font-size: 12px; font-weight: 600; color: var(--text-white);">Configure Backend Cosmos DB Connection</span>
+                <button type="button" onclick="toggleBackendConfig()" style="background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 12px;">
+                    <i class="fa-solid fa-xmark"></i> Close
+                </button>
+            </div>
+            {% endif %}
+
+            <form action="{{ url_for('ui.connect_cosmos') }}" method="POST" class="auth-form" id="cosmosBackendForm">
+                <!-- Auth Method Tab Selectors -->
+                <div class="auth-tabs">
+                    <label class="auth-tab">
+                        <input type="radio" name="auth_method" value="conn_str" checked onclick="switchAuthTab('conn_str')">
+                        <div class="tab-button">
+                            <i class="fa-solid fa-link"></i>
+                            <span>Conn String</span>
+                        </div>
+                    </label>
+                    <label class="auth-tab">
+                        <input type="radio" name="auth_method" value="key" onclick="switchAuthTab('key')">
+                        <div class="tab-button">
+                            <i class="fa-solid fa-key"></i>
+                            <span>Account Key</span>
+                        </div>
+                    </label>
+                    <label class="auth-tab">
+                        <input type="radio" name="auth_method" value="sp" onclick="switchAuthTab('sp')">
+                        <div class="tab-button">
+                            <i class="fa-solid fa-users-gear"></i>
+                            <span>Principal</span>
+                        </div>
+                    </label>
+                </div>
+
+                <!-- Tab 1: Connection String -->
+                <div class="form-group-tab active" id="tab-conn_str">
+                    <div class="input-wrapper">
+                        <label for="conn_string">Cosmos DB Connection String</label>
+                        <div class="input-icon-group">
+                            <i class="fa-solid fa-plug icon-inside"></i>
+                            <textarea name="conn_string" id="conn_string" placeholder="AccountEndpoint=https://your-account.documents.azure.com:443/;AccountKey=your-key;"></textarea>
+                        </div>
+                        <span class="help-text">Enter the full Azure Cosmos DB connection string.</span>
+                    </div>
+                </div>
+
+                <!-- Tab 2: Account Key -->
+                <div class="form-group-tab" id="tab-key">
+                    <div class="input-wrapper">
+                        <label for="endpoint_key">Endpoint URI</label>
+                        <div class="input-icon-group">
+                            <i class="fa-solid fa-globe icon-inside"></i>
+                            <input type="url" name="endpoint" id="endpoint_key" placeholder="https://your-account.documents.azure.com:443/">
+                        </div>
+                    </div>
+                    <div class="input-wrapper">
+                        <label for="account_key">Account Key</label>
+                        <div class="input-icon-group">
+                            <i class="fa-solid fa-lock icon-inside"></i>
+                            <input type="password" name="account_key" id="account_key" placeholder="your-primary-or-secondary-key">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab 3: Service Principal -->
+                <div class="form-group-tab" id="tab-sp">
+                    <div class="input-wrapper">
+                        <label for="endpoint_sp">Endpoint URI</label>
+                        <div class="input-icon-group">
+                            <i class="fa-solid fa-globe icon-inside"></i>
+                            <input type="url" name="endpoint" id="endpoint_sp" placeholder="https://your-account.documents.azure.com:443/">
+                        </div>
+                    </div>
+                    <div class="input-wrapper">
+                        <label for="tenant_id">Tenant ID</label>
+                        <div class="input-icon-group">
+                            <i class="fa-solid fa-building icon-inside"></i>
+                            <input type="text" name="tenant_id" id="tenant_id" placeholder="00000000-0000-0000-0000-000000000000">
+                        </div>
+                    </div>
+                    <div class="input-wrapper">
+                        <label for="client_id">Client ID</label>
+                        <div class="input-icon-group">
+                            <i class="fa-solid fa-id-card icon-inside"></i>
+                            <input type="text" name="client_id" id="client_id" placeholder="00000000-0000-0000-0000-000000000000">
+                        </div>
+                    </div>
+                    <div class="input-wrapper">
+                        <label for="client_secret">Client Secret</label>
+                        <div class="input-icon-group">
+                            <i class="fa-solid fa-key icon-inside"></i>
+                            <input type="password" name="client_secret" id="client_secret" placeholder="your-service-principal-secret">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="remember-me">
+                    <input type="checkbox" id="remember_credentials" checked>
+                    <label for="remember_credentials">Remember Endpoint Details Locally</label>
+                </div>
+
+                <button type="submit" class="btn btn-primary btn-block">
+                    <span>Connect Backend</span>
+                    <i class="fa-solid fa-network-wired"></i>
+                </button>
+            </form>
+        </div>
     </div>
 </div>
 
@@ -198,7 +194,15 @@
         document.querySelectorAll('.form-group-tab').forEach(el => {
             el.classList.remove('active');
         });
-        document.getElementById('tab-' + tabName).classList.add('active');
+        const targetTab = document.getElementById('tab-' + tabName);
+        if (targetTab) targetTab.classList.add('active');
+    }
+
+    function toggleBackendConfig() {
+        const sec = document.getElementById('backendConfigSection');
+        if (sec) {
+            sec.style.display = (sec.style.display === 'none' || sec.style.display === '') ? 'block' : 'none';
+        }
     }
 
     // Auto-load values from localStorage on page load
@@ -217,34 +221,37 @@
             }
         }
 
-        if (storedConn) document.getElementById("conn_string").value = storedConn;
+        if (storedConn && document.getElementById("conn_string")) document.getElementById("conn_string").value = storedConn;
         if (storedEndpoint) {
-            document.getElementById("endpoint_key").value = storedEndpoint;
-            document.getElementById("endpoint_sp").value = storedEndpoint;
+            if (document.getElementById("endpoint_key")) document.getElementById("endpoint_key").value = storedEndpoint;
+            if (document.getElementById("endpoint_sp")) document.getElementById("endpoint_sp").value = storedEndpoint;
         }
-        if (storedTenant) document.getElementById("tenant_id").value = storedTenant;
-        if (storedClient) document.getElementById("client_id").value = storedClient;
+        if (storedTenant && document.getElementById("tenant_id")) document.getElementById("tenant_id").value = storedTenant;
+        if (storedClient && document.getElementById("client_id")) document.getElementById("client_id").value = storedClient;
     });
 
-    // Save values to localStorage on submit
-    document.getElementById("loginForm").addEventListener("submit", function() {
-        const remember = document.getElementById("remember_credentials").checked;
-        const method = document.querySelector('input[name="auth_method"]:checked').value;
-        
-        if (remember) {
-            localStorage.setItem("cosmos_auth_method", method);
-            if (method === "conn_str") {
-                localStorage.setItem("cosmos_conn_str", document.getElementById("conn_string").value);
-            } else if (method === "key") {
-                localStorage.setItem("cosmos_endpoint", document.getElementById("endpoint_key").value);
-            } else if (method === "sp") {
-                localStorage.setItem("cosmos_endpoint", document.getElementById("endpoint_sp").value);
-                localStorage.setItem("cosmos_tenant_id", document.getElementById("tenant_id").value);
-                localStorage.setItem("cosmos_client_id", document.getElementById("client_id").value);
+    const backendForm = document.getElementById("cosmosBackendForm");
+    if (backendForm) {
+        backendForm.addEventListener("submit", function() {
+            const remember = document.getElementById("remember_credentials").checked;
+            const checkedMethod = document.querySelector('input[name="auth_method"]:checked');
+            const method = checkedMethod ? checkedMethod.value : "conn_str";
+            
+            if (remember) {
+                localStorage.setItem("cosmos_auth_method", method);
+                if (method === "conn_str") {
+                    localStorage.setItem("cosmos_conn_str", document.getElementById("conn_string").value);
+                } else if (method === "key") {
+                    localStorage.setItem("cosmos_endpoint", document.getElementById("endpoint_key").value);
+                } else if (method === "sp") {
+                    localStorage.setItem("cosmos_endpoint", document.getElementById("endpoint_sp").value);
+                    localStorage.setItem("cosmos_tenant_id", document.getElementById("tenant_id").value);
+                    localStorage.setItem("cosmos_client_id", document.getElementById("client_id").value);
+                }
+            } else {
+                localStorage.clear();
             }
-        } else {
-            localStorage.clear();
-        }
-    });
+        });
+    }
 </script>
 {% endblock %}

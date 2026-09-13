@@ -1,0 +1,515 @@
+{% extends "base.html" %}
+
+{% block title %}User & Role Management - CosmosUI{% endblock %}
+
+{% block content %}
+<div class="glass-card" style="border-radius: 12px; padding: 24px;">
+    
+    <!-- Top Header -->
+    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 18px; flex-wrap: wrap; gap: 14px;">
+        <div>
+            <h3 style="font-family: var(--font-heading); font-size: 20px; font-weight: 600; color: var(--text-white); display: flex; align-items: center; gap: 8px;">
+                <i class="fa-solid fa-users-gear" style="color: var(--accent-blue);"></i>
+                Portal User & Role Management
+            </h3>
+            <p style="font-size: 12.5px; color: var(--text-muted); margin-top: 4px;">
+                Manage user accounts, assign RBAC permissions (Admin, Contributor, Reader), enforce password resets, and import users in batch.
+            </p>
+        </div>
+        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+            <!-- Single Add User Button -->
+            <button type="button" class="btn btn-primary btn-sm" onclick="openAddUserModal()" style="display: flex; align-items: center; gap: 6px;">
+                <i class="fa-solid fa-user-plus"></i> Add User
+            </button>
+            <!-- Bulk Import Users Button -->
+            <button type="button" class="btn btn-neutral btn-sm" onclick="openBulkUsersModal()" style="display: flex; align-items: center; gap: 6px;">
+                <i class="fa-solid fa-file-import" style="color: var(--accent-purple);"></i> Bulk Import (CSV/Excel)
+            </button>
+        </div>
+    </div>
+
+    <!-- User Stats Cards -->
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-top: 20px;">
+        <div class="glass-card" style="padding: 16px; border-radius: 10px; display: flex; align-items: center; gap: 14px;">
+            <div style="width: 44px; height: 44px; border-radius: 10px; background: rgba(56, 189, 248, 0.12); display: flex; align-items: center; justify-content: center;">
+                <i class="fa-solid fa-users" style="color: var(--accent-blue); font-size: 18px;"></i>
+            </div>
+            <div>
+                <span style="font-size: 11.5px; color: var(--text-muted); font-weight: 500; text-transform: uppercase;">Total Users</span>
+                <h4 style="font-size: 20px; font-weight: 700; color: var(--text-white); margin-top: 2px;">{{ users|length }}</h4>
+            </div>
+        </div>
+
+        <div class="glass-card" style="padding: 16px; border-radius: 10px; display: flex; align-items: center; gap: 14px;">
+            <div style="width: 44px; height: 44px; border-radius: 10px; background: rgba(245, 158, 11, 0.12); display: flex; align-items: center; justify-content: center;">
+                <i class="fa-solid fa-shield-halved" style="color: var(--warning); font-size: 18px;"></i>
+            </div>
+            <div>
+                <span style="font-size: 11.5px; color: var(--text-muted); font-weight: 500; text-transform: uppercase;">Administrators</span>
+                <h4 style="font-size: 20px; font-weight: 700; color: var(--text-white); margin-top: 2px;">
+                    {{ users|selectattr('role', 'equalto', 'admin')|list|length }}
+                </h4>
+            </div>
+        </div>
+
+        <div class="glass-card" style="padding: 16px; border-radius: 10px; display: flex; align-items: center; gap: 14px;">
+            <div style="width: 44px; height: 44px; border-radius: 10px; background: rgba(16, 185, 129, 0.12); display: flex; align-items: center; justify-content: center;">
+                <i class="fa-solid fa-pen-ruler" style="color: var(--success); font-size: 18px;"></i>
+            </div>
+            <div>
+                <span style="font-size: 11.5px; color: var(--text-muted); font-weight: 500; text-transform: uppercase;">Contributors</span>
+                <h4 style="font-size: 20px; font-weight: 700; color: var(--text-white); margin-top: 2px;">
+                    {{ users|selectattr('role', 'equalto', 'contributor')|list|length }}
+                </h4>
+            </div>
+        </div>
+
+        <div class="glass-card" style="padding: 16px; border-radius: 10px; display: flex; align-items: center; gap: 14px;">
+            <div style="width: 44px; height: 44px; border-radius: 10px; background: rgba(168, 85, 247, 0.12); display: flex; align-items: center; justify-content: center;">
+                <i class="fa-solid fa-book-open-reader" style="color: var(--accent-purple); font-size: 18px;"></i>
+            </div>
+            <div>
+                <span style="font-size: 11.5px; color: var(--text-muted); font-weight: 500; text-transform: uppercase;">Readers (View-Only)</span>
+                <h4 style="font-size: 20px; font-weight: 700; color: var(--text-white); margin-top: 2px;">
+                    {{ users|selectattr('role', 'equalto', 'reader')|list|length }}
+                </h4>
+            </div>
+        </div>
+    </div>
+
+    <!-- Search Bar -->
+    <div style="margin-top: 20px; display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap;">
+        <div style="flex: 1; min-width: 260px; max-width: 420px;">
+            <div class="search-input-wrapper">
+                <i class="fa-solid fa-magnifying-glass search-icon"></i>
+                <input type="text" id="userSearchInput" placeholder="Search by username, display name, email..." oninput="filterUsersTable(this.value)">
+                <button type="button" id="btnClearUserSearch" class="btn-clear-search" style="display: none;" onclick="clearUserSearch()" title="Clear">
+                    <i class="fa-solid fa-circle-xmark"></i>
+                </button>
+            </div>
+        </div>
+        <div style="font-size: 12px; color: var(--text-muted);">
+            Stored in: <code style="color: var(--accent-blue); font-family: var(--font-code);">{{ system_db_name }}/{{ user_container_name }}</code>
+        </div>
+    </div>
+
+    <!-- Users Table -->
+    <div class="table-responsive" style="margin-top: 14px;">
+        <table class="table table-bordered table-sm align-middle small" style="width: 100%; border-collapse: collapse; text-align: left;">
+            <thead>
+                <tr style="border-bottom: 2px solid var(--border-color); background-color: rgba(255,255,255,0.02);">
+                    <th style="padding: 10px 14px; color: var(--text-white); font-weight: 600;">User & Identity</th>
+                    <th style="padding: 10px 14px; color: var(--text-white); font-weight: 600; width: 140px;">Role</th>
+                    <th style="padding: 10px 14px; color: var(--text-white); font-weight: 600; width: 120px; text-align: center;">Status</th>
+                    <th style="padding: 10px 14px; color: var(--text-white); font-weight: 600; width: 170px;">Last Login</th>
+                    <th style="padding: 10px 14px; color: var(--text-white); font-weight: 600; width: 160px;">Created</th>
+                    <th style="padding: 10px 14px; color: var(--text-white); font-weight: 600; width: 110px; text-align: center;">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="usersTableBody">
+            {% if users %}
+                {% for u in users %}
+                <tr class="user-row" data-username="{{ u.username }}" data-display="{{ u.display_name }}" data-email="{{ u.email }}" style="border-bottom: 1px solid var(--border-color); transition: var(--transition-fast);">
+                    <!-- User & Identity -->
+                    <td style="padding: 10px 14px; vertical-align: middle;">
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <div style="width: 34px; height: 34px; border-radius: 50%; background: {% if u.role == 'admin' %}rgba(245, 158, 11, 0.15){% elif u.role == 'contributor' %}rgba(16, 185, 129, 0.15){% else %}rgba(168, 85, 247, 0.15){% endif %}; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; color: {% if u.role == 'admin' %}var(--warning){% elif u.role == 'contributor' %}var(--success){% else %}var(--accent-purple){% endif %}; flex-shrink: 0;">
+                                {{ u.username[:1]|upper }}
+                            </div>
+                            <div>
+                                <div style="font-weight: 600; color: var(--text-white); font-size: 13px; display: flex; align-items: center; gap: 6px;">
+                                    <span>{{ u.display_name }}</span>
+                                    {% if u.username == session.get('user', {}).get('username') %}
+                                        <span class="badge badge-blue" style="font-size: 9.5px; padding: 1px 6px;">You</span>
+                                    {% endif %}
+                                </div>
+                                <div style="font-size: 11.5px; color: var(--text-muted); display: flex; gap: 8px; align-items: center; margin-top: 1px;">
+                                    <span><code>{{ u.username }}</code></span>
+                                    {% if u.email %}
+                                        <span>&bull;</span>
+                                        <span>{{ u.email }}</span>
+                                    {% endif %}
+                                    {% if u.must_change_password %}
+                                        <span>&bull;</span>
+                                        <span style="color: var(--warning); font-size: 10.5px;"><i class="fa-solid fa-triangle-exclamation"></i> Reset Enforced</span>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                    </td>
+
+                    <!-- Role Badge -->
+                    <td style="padding: 10px 14px; vertical-align: middle;">
+                        {% if u.role == 'admin' %}
+                            <span class="badge" style="background: rgba(245, 158, 11, 0.15); color: var(--warning); border: 1px solid rgba(245, 158, 11, 0.3); font-size: 11px;">
+                                <i class="fa-solid fa-shield-halved" style="margin-right: 4px;"></i> Administrator
+                            </span>
+                        {% elif u.role == 'contributor' %}
+                            <span class="badge" style="background: rgba(16, 185, 129, 0.15); color: var(--success); border: 1px solid rgba(16, 185, 129, 0.3); font-size: 11px;">
+                                <i class="fa-solid fa-pen-ruler" style="margin-right: 4px;"></i> Contributor
+                            </span>
+                        {% else %}
+                            <span class="badge" style="background: rgba(168, 85, 247, 0.15); color: var(--accent-purple); border: 1px solid rgba(168, 85, 247, 0.3); font-size: 11px;">
+                                <i class="fa-solid fa-book-open-reader" style="margin-right: 4px;"></i> Reader
+                            </span>
+                        {% endif %}
+                    </td>
+
+                    <!-- Status Toggle -->
+                    <td style="padding: 10px 14px; vertical-align: middle; text-align: center;">
+                        <form method="POST" action="{{ url_for('ui.toggle_user_status') }}" style="display: inline;">
+                            <input type="hidden" name="username" value="{{ u.username }}">
+                            <input type="hidden" name="is_active" value="{% if u.is_active %}0{% else %}1{% endif %}">
+                            <button type="submit" class="btn btn-sm" style="padding: 3px 8px; font-size: 11px; border-radius: 6px; background: {% if u.is_active %}rgba(16, 185, 129, 0.12){% else %}rgba(239, 68, 68, 0.12){% endif %}; color: {% if u.is_active %}var(--success){% else %}var(--danger){% endif %}; border: 1px solid {% if u.is_active %}rgba(16, 185, 129, 0.3){% else %}rgba(239, 68, 68, 0.3){% endif %}; cursor: {% if u.username == session.get('user', {}).get('username') %}not-allowed{% else %}pointer{% endif %};" {% if u.username == session.get('user', {}).get('username') %}disabled title="Cannot disable your own account"{% endif %}>
+                                <i class="fa-solid {% if u.is_active %}fa-circle-check{% else %}fa-circle-xmark{% endif %}"></i>
+                                <span>{% if u.is_active %}Active{% else %}Disabled{% endif %}</span>
+                            </button>
+                        </form>
+                    </td>
+
+                    <!-- Last Login -->
+                    <td style="padding: 10px 14px; vertical-align: middle; color: var(--text-muted); font-size: 12px;">
+                        {% if u.last_login %}
+                            {{ u.last_login[:19].replace('T', ' ') }}
+                        {% else %}
+                            <span style="opacity: 0.5;">Never</span>
+                        {% endif %}
+                    </td>
+
+                    <!-- Created At -->
+                    <td style="padding: 10px 14px; vertical-align: middle; color: var(--text-muted); font-size: 12px;">
+                        {% if u.created_at %}
+                            {{ u.created_at[:10] }}
+                        {% else %}
+                            <span style="opacity: 0.5;">&mdash;</span>
+                        {% endif %}
+                    </td>
+
+                    <!-- Actions Dropdown / Buttons -->
+                    <td style="padding: 10px 14px; vertical-align: middle; text-align: center;">
+                        <div style="display: inline-flex; gap: 4px;">
+                            <!-- Edit -->
+                            <button type="button" class="btn-action" onclick="openEditUserModal('{{ u.username }}', '{{ u.display_name }}', '{{ u.email }}', '{{ u.role }}')" title="Edit User">
+                                <i class="fa-solid fa-pen-to-square"></i>
+                            </button>
+                            <!-- Reset Password -->
+                            <button type="button" class="btn-action" onclick="openResetPasswordModal('{{ u.username }}')" title="Reset Password">
+                                <i class="fa-solid fa-key" style="color: var(--warning);"></i>
+                            </button>
+                            <!-- Delete -->
+                            <button type="button" class="btn-action text-danger" onclick="openDeleteUserModal('{{ u.username }}')" title="Delete User" {% if u.username == session.get('user', {}).get('username') %}disabled style="opacity: 0.3; cursor: not-allowed;"{% endif %}>
+                                <i class="fa-solid fa-trash-can"></i>
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            {% else %}
+                <tr>
+                    <td colspan="6" class="table-empty-state">
+                        <i class="fa-solid fa-users empty-icon"></i>
+                        <h4>No Users Found</h4>
+                        <p>No user accounts have been created yet.</p>
+                    </td>
+                </tr>
+            {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Modal 1: Add Single User Modal -->
+<div class="modal" id="addUserModal">
+    <div class="modal-dialog modal-md">
+        <form method="POST" action="{{ url_for('ui.create_user') }}" class="modal-content" onsubmit="return validateAddUserForm(event)">
+            <div class="modal-header">
+                <div class="modal-title-group">
+                    <i class="fa-solid fa-user-plus" style="color: var(--accent-blue);"></i>
+                    <h3>Add New User</h3>
+                </div>
+                <button type="button" class="modal-close" onclick="closeModal('addUserModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="input-wrapper" style="margin-bottom: 14px;">
+                    <label for="add_username">Username *</label>
+                    <div class="input-icon-group">
+                        <i class="fa-solid fa-user icon-inside"></i>
+                        <input type="text" name="username" id="add_username" required placeholder="e.g. jdoe" style="padding-left: 36px; font-size: 13px;">
+                    </div>
+                </div>
+
+                <div class="input-wrapper" style="margin-bottom: 14px;">
+                    <label for="add_display_name">Display Name</label>
+                    <div class="input-icon-group">
+                        <i class="fa-solid fa-id-badge icon-inside"></i>
+                        <input type="text" name="display_name" id="add_display_name" placeholder="e.g. John Doe" style="padding-left: 36px; font-size: 13px;">
+                    </div>
+                </div>
+
+                <div class="input-wrapper" style="margin-bottom: 14px;">
+                    <label for="add_email">Email Address</label>
+                    <div class="input-icon-group">
+                        <i class="fa-solid fa-envelope icon-inside"></i>
+                        <input type="email" name="email" id="add_email" placeholder="john.doe@company.com" style="padding-left: 36px; font-size: 13px;">
+                    </div>
+                </div>
+
+                <div class="input-wrapper" style="margin-bottom: 14px;">
+                    <label for="add_role">Role & RBAC Permissions *</label>
+                    <select name="role" id="add_role" class="form-control db-select" style="font-size: 13px;">
+                        <option value="contributor" selected>Contributor (Read & Write databases/containers/documents)</option>
+                        <option value="reader">Reader (View & Query documents only)</option>
+                        <option value="admin">Administrator (Full Access + User Management & Logs)</option>
+                    </select>
+                </div>
+
+                <div class="input-wrapper" style="margin-bottom: 14px;">
+                    <label for="add_password">Initial Password *</label>
+                    <div class="input-icon-group">
+                        <i class="fa-solid fa-lock icon-inside"></i>
+                        <input type="password" name="password" id="add_password" required placeholder="Min 6 characters" style="padding-left: 36px; font-size: 13px;">
+                    </div>
+                </div>
+
+                <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px;">
+                    <input type="checkbox" name="enforce_reset" id="add_enforce_reset" value="1" checked style="accent-color: var(--primary); width: 16px; height: 16px;">
+                    <label for="add_enforce_reset" style="font-size: 12px; color: var(--text-normal); cursor: pointer;">Require password change on first login</label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-neutral btn-sm" onclick="closeModal('addUserModal')">Cancel</button>
+                <button type="submit" class="btn btn-primary btn-sm">
+                    <i class="fa-solid fa-user-check"></i>
+                    <span>Create User</span>
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Modal 2: Bulk Import Users Modal -->
+<div class="modal" id="bulkUsersModal">
+    <div class="modal-dialog modal-md">
+        <form method="POST" action="{{ url_for('ui.bulk_create_users') }}" enctype="multipart/form-data" class="modal-content">
+            <div class="modal-header">
+                <div class="modal-title-group">
+                    <i class="fa-solid fa-file-import" style="color: var(--accent-purple);"></i>
+                    <h3>Bulk Import Users</h3>
+                </div>
+                <button type="button" class="modal-close" onclick="closeModal('bulkUsersModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p style="font-size: 12.5px; color: var(--text-muted); line-height: 1.5; margin-bottom: 14px;">
+                    Upload a <strong>CSV</strong> or <strong>Excel (.xlsx)</strong> file with user credentials and roles.
+                </p>
+
+                <div style="background: rgba(0, 120, 212, 0.08); border: 1px solid rgba(0, 120, 212, 0.25); border-radius: 8px; padding: 12px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <span style="font-size: 12px; font-weight: 600; color: var(--text-white); display: block;">Sample Template</span>
+                        <span style="font-size: 11px; color: var(--text-muted);">Columns: username, email, password, enforcepasswordreset, role, display_name</span>
+                    </div>
+                    <a href="{{ url_for('ui.download_user_template') }}" class="btn btn-neutral btn-sm" style="font-size: 11.5px; display: inline-flex; align-items: center; gap: 5px;">
+                        <i class="fa-solid fa-download"></i> CSV Template
+                    </a>
+                </div>
+
+                <div class="input-wrapper">
+                    <label for="bulk_user_file">Select CSV or Excel File *</label>
+                    <input type="file" name="file" id="bulk_user_file" required accept=".csv, .xlsx" style="font-size: 13px;">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-neutral btn-sm" onclick="closeModal('bulkUsersModal')">Cancel</button>
+                <button type="submit" class="btn btn-primary btn-sm">
+                    <i class="fa-solid fa-upload"></i>
+                    <span>Start Bulk Import</span>
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Modal 3: Edit User Modal -->
+<div class="modal" id="editUserModal">
+    <div class="modal-dialog modal-md">
+        <form method="POST" action="{{ url_for('ui.edit_user') }}" class="modal-content">
+            <div class="modal-header">
+                <div class="modal-title-group">
+                    <i class="fa-solid fa-user-pen" style="color: var(--accent-blue);"></i>
+                    <h3>Edit User Profile</h3>
+                </div>
+                <button type="button" class="modal-close" onclick="closeModal('editUserModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="input-wrapper" style="margin-bottom: 14px;">
+                    <label>Username</label>
+                    <input type="text" name="username" id="edit_username" readonly style="opacity: 0.7; cursor: not-allowed; background: rgba(0,0,0,0.2);">
+                </div>
+
+                <div class="input-wrapper" style="margin-bottom: 14px;">
+                    <label for="edit_display_name">Display Name</label>
+                    <input type="text" name="display_name" id="edit_display_name" placeholder="Display Name">
+                </div>
+
+                <div class="input-wrapper" style="margin-bottom: 14px;">
+                    <label for="edit_email">Email Address</label>
+                    <input type="email" name="email" id="edit_email" placeholder="email@company.com">
+                </div>
+
+                <div class="input-wrapper">
+                    <label for="edit_role">Role & RBAC Permissions</label>
+                    <select name="role" id="edit_role" class="form-control db-select">
+                        <option value="contributor">Contributor (Read & Write)</option>
+                        <option value="reader">Reader (View & Query only)</option>
+                        <option value="admin">Administrator (Full Access + Users & Logs)</option>
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-neutral btn-sm" onclick="closeModal('editUserModal')">Cancel</button>
+                <button type="submit" class="btn btn-primary btn-sm">
+                    <i class="fa-solid fa-floppy-disk"></i>
+                    <span>Save Changes</span>
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Modal 4: Reset User Password Modal -->
+<div class="modal" id="resetPasswordModal">
+    <div class="modal-dialog modal-sm">
+        <form method="POST" action="{{ url_for('ui.reset_user_password') }}" class="modal-content">
+            <div class="modal-header">
+                <div class="modal-title-group">
+                    <i class="fa-solid fa-key" style="color: var(--warning);"></i>
+                    <h3>Reset User Password</h3>
+                </div>
+                <button type="button" class="modal-close" onclick="closeModal('resetPasswordModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" name="username" id="reset_target_username">
+                <p style="font-size: 12.5px; color: var(--text-normal); margin-bottom: 14px;">
+                    Setting a new password for <strong id="resetTargetDisplay" style="color: var(--text-white);"></strong>:
+                </p>
+
+                <div class="input-wrapper" style="margin-bottom: 14px;">
+                    <label for="reset_new_password">New Temporary Password *</label>
+                    <input type="password" name="new_password" id="reset_new_password" required placeholder="Min 6 characters">
+                </div>
+
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <input type="checkbox" name="enforce_reset" id="reset_enforce_reset" value="1" checked style="accent-color: var(--primary); width: 16px; height: 16px;">
+                    <label for="reset_enforce_reset" style="font-size: 12px; color: var(--text-normal); cursor: pointer;">Require change on next login</label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-neutral btn-sm" onclick="closeModal('resetPasswordModal')">Cancel</button>
+                <button type="submit" class="btn btn-primary btn-sm">
+                    <i class="fa-solid fa-check"></i>
+                    <span>Reset Password</span>
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Modal 5: Delete User Confirmation Modal -->
+<div class="modal" id="deleteUserModal">
+    <div class="modal-dialog modal-sm">
+        <form method="POST" action="{{ url_for('ui.delete_user') }}" class="modal-content">
+            <div class="modal-header">
+                <div class="modal-title-group text-danger">
+                    <i class="fa-solid fa-trash-can"></i>
+                    <h3>Delete User Account</h3>
+                </div>
+                <button type="button" class="modal-close" onclick="closeModal('deleteUserModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" name="username" id="delete_target_username">
+                <p style="font-size: 13px; color: var(--text-normal); line-height: 1.5;">
+                    Are you sure you want to permanently delete user account <strong id="deleteTargetDisplay" style="color: var(--text-white);"></strong>?
+                </p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-neutral btn-sm" onclick="closeModal('deleteUserModal')">Cancel</button>
+                <button type="submit" class="btn btn-danger btn-sm">
+                    <i class="fa-solid fa-trash-can"></i>
+                    <span>Confirm Delete</span>
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function openAddUserModal() {
+    document.getElementById('add_username').value = '';
+    document.getElementById('add_display_name').value = '';
+    document.getElementById('add_email').value = '';
+    document.getElementById('add_password').value = '';
+    openModal('addUserModal');
+}
+
+function openBulkUsersModal() {
+    openModal('bulkUsersModal');
+}
+
+function openEditUserModal(username, displayName, email, role) {
+    document.getElementById('edit_username').value = username;
+    document.getElementById('edit_display_name').value = displayName;
+    document.getElementById('edit_email').value = email;
+    document.getElementById('edit_role').value = role;
+    openModal('editUserModal');
+}
+
+function openResetPasswordModal(username) {
+    document.getElementById('reset_target_username').value = username;
+    document.getElementById('resetTargetDisplay').innerText = username;
+    document.getElementById('reset_new_password').value = '';
+    openModal('resetPasswordModal');
+}
+
+function openDeleteUserModal(username) {
+    document.getElementById('delete_target_username').value = username;
+    document.getElementById('deleteTargetDisplay').innerText = username;
+    openModal('deleteUserModal');
+}
+
+function filterUsersTable(query) {
+    const q = (query || '').toLowerCase().trim();
+    const rows = document.querySelectorAll('.user-row');
+    const btnClear = document.getElementById('btnClearUserSearch');
+    if (btnClear) btnClear.style.display = q ? 'block' : 'none';
+
+    rows.forEach(r => {
+        const u = (r.getAttribute('data-username') || '').toLowerCase();
+        const d = (r.getAttribute('data-display') || '').toLowerCase();
+        const e = (r.getAttribute('data-email') || '').toLowerCase();
+        if (!q || u.includes(q) || d.includes(q) || e.includes(q)) {
+            r.style.display = '';
+        } else {
+            r.style.display = 'none';
+        }
+    });
+}
+
+function clearUserSearch() {
+    const input = document.getElementById('userSearchInput');
+    if (input) {
+        input.value = '';
+        filterUsersTable('');
+    }
+}
+
+function validateAddUserForm(e) {
+    const p = document.getElementById('add_password').value;
+    if (p.length < 6) {
+        alert('Password must be at least 6 characters long.');
+        e.preventDefault();
+        return false;
+    }
+    return true;
+}
+</script>
+{% endblock %}

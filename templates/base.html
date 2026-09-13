@@ -113,11 +113,28 @@
                 <div class="auth-type">{{ auth_info.method if auth_info else 'Authentication' }}</div>
             </div>
 
+            {% if is_admin %}
+            <!-- Portal Management (Admin Only) -->
+            <div class="menu-label">Portal Management</div>
+            <div class="portal-nav-group" style="margin-bottom: 14px; display: flex; flex-direction: column; gap: 4px;">
+                <a href="{{ url_for('ui.users_list') }}" class="portal-nav-item {% if request.path.startswith('/cosmos-ui/users') %}active{% endif %}" style="display: flex; align-items: center; gap: 9px; padding: 8px 12px; border-radius: 8px; color: var(--text-normal); font-size: 13px; text-decoration: none; transition: var(--transition-fast);">
+                    <i class="fa-solid fa-users-gear" style="color: var(--accent-blue); width: 16px; text-align: center;"></i>
+                    <span>User Management</span>
+                </a>
+                <a href="{{ url_for('ui.activity_logs') }}" class="portal-nav-item {% if request.path.startswith('/cosmos-ui/activity-logs') %}active{% endif %}" style="display: flex; align-items: center; gap: 9px; padding: 8px 12px; border-radius: 8px; color: var(--text-normal); font-size: 13px; text-decoration: none; transition: var(--transition-fast);">
+                    <i class="fa-solid fa-clipboard-list" style="color: var(--success); width: 16px; text-align: center;"></i>
+                    <span>Activity Audit Logs</span>
+                </a>
+            </div>
+            {% endif %}
+
             <div class="menu-label" style="display:flex; justify-content:space-between; align-items:center; width:100%;">
                 <span>Databases & Containers</span>
+                {% if not is_reader %}
                 <a href="javascript:void(0)" onclick="openCreateStructureModal()" title="Create Database & Container" style="color: var(--text-muted); font-size: 13.5px; transition: var(--transition-fast);" onmouseover="this.style.color='var(--primary)'" onmouseout="this.style.color='var(--text-muted)'">
                     <i class="fa-solid fa-circle-plus"></i>
                 </a>
+                {% endif %}
             </div>
             <div class="database-tree">
                 {% if db_tree %}
@@ -126,9 +143,11 @@
                         <div class="db-title" onclick="toggleDbNode(this)" style="display: flex; align-items: center; width: 100%;">
                             <i class="fa-solid fa-database db-icon"></i>
                             <span class="db-name" style="flex-grow: 1;">{{ db.id }}</span>
+                            {% if is_admin %}
                             <button type="button" class="btn-sidebar-delete" onclick="event.stopPropagation(); confirmDeleteDb('{{ db.id }}')" title="Delete Database" style="background: transparent; border: none; color: var(--danger); cursor: pointer; transition: var(--transition-fast); padding: 2px 6px; margin-right: 6px; display: inline-flex; align-items: center;">
                                 <i class="fa-solid fa-trash-can" style="font-size: 11.5px;"></i>
                             </button>
+                            {% endif %}
                             <i class="fa-solid fa-chevron-right chevron-icon"></i>
                         </div>
                         <div class="containers-list">
@@ -138,9 +157,11 @@
                                style="display: flex; align-items: center; width: 100%;">
                                 <i class="fa-solid fa-table-list container-icon"></i>
                                 <span style="flex-grow: 1; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">{{ container }}</span>
+                                {% if is_admin %}
                                 <button type="button" class="btn-sidebar-container-delete" onclick="event.preventDefault(); event.stopPropagation(); confirmDeleteContainer('{{ db.id }}', '{{ container }}')" title="Delete Container" style="background: transparent; border: none; color: var(--danger); cursor: pointer; transition: var(--transition-fast); padding: 2px 6px; display: inline-flex; align-items: center;">
                                     <i class="fa-solid fa-trash-can" style="font-size: 11px;"></i>
                                 </button>
+                                {% endif %}
                             </a>
                             {% endfor %}
                         </div>
@@ -152,10 +173,26 @@
             </div>
         </nav>
 
-        <div class="sidebar-footer">
-            <a href="{{ url_for('ui.logout') }}" class="btn-logout">
+        <div class="sidebar-footer" style="padding: 12px 14px; border-top: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 8px;">
+            {% if current_user %}
+            <div style="display: flex; align-items: center; justify-content: space-between; width: 100%;">
+                <div style="display: flex; align-items: center; gap: 8px; overflow: hidden;">
+                    <div style="width: 30px; height: 30px; border-radius: 50%; background: {% if is_admin %}rgba(245, 158, 11, 0.2){% elif is_reader %}rgba(168, 85, 247, 0.2){% else %}rgba(16, 185, 129, 0.2){% endif %}; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px; color: {% if is_admin %}var(--warning){% elif is_reader %}var(--accent-purple){% else %}var(--success){% endif %}; flex-shrink: 0;">
+                        {{ current_user.username[:1]|upper }}
+                    </div>
+                    <div style="display: flex; flex-direction: column; overflow: hidden;">
+                        <span style="font-size: 12.5px; font-weight: 600; color: var(--text-white); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{{ current_user.display_name }}">{{ current_user.display_name }}</span>
+                        <span style="font-size: 10.5px; color: var(--text-muted); text-transform: uppercase;">{{ user_role }}</span>
+                    </div>
+                </div>
+                <button type="button" onclick="openChangePasswordModal()" title="Change Password" style="background: rgba(255,255,255,0.06); border: 1px solid var(--border-color); color: var(--text-muted); border-radius: 6px; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: var(--transition-fast);" onmouseover="this.style.color='var(--primary)'" onmouseout="this.style.color='var(--text-muted)'">
+                    <i class="fa-solid fa-key" style="font-size: 11px;"></i>
+                </button>
+            </div>
+            {% endif %}
+            <a href="{{ url_for('ui.logout') }}" class="btn-logout" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 10px; border-radius: 6px; font-size: 12px;">
                 <i class="fa-solid fa-arrow-right-from-bracket"></i>
-                <span>Disconnect</span>
+                <span>Sign Out</span>
             </a>
         </div>
     </aside>
@@ -181,12 +218,12 @@
                 <button id="themeToggle" class="btn-theme-toggle" onclick="toggleTheme()" title="Toggle Theme" style="margin-right: 4px;">
                     <i class="fa-solid fa-moon"></i>
                 </button>
-                <div class="avatar">
-                    <i class="fa-regular fa-user"></i>
+                <div class="avatar" style="background: {% if is_admin %}rgba(245, 158, 11, 0.2){% elif is_reader %}rgba(168, 85, 247, 0.2){% else %}rgba(16, 185, 129, 0.2){% endif %}; color: {% if is_admin %}var(--warning){% elif is_reader %}var(--accent-purple){% else %}var(--success){% endif %};">
+                    {{ current_user.username[:1]|upper if current_user else 'U' }}
                 </div>
                 <div class="profile-info">
-                    <span class="username">Developer Mode</span>
-                    <span class="role">Admin Portal</span>
+                    <span class="username">{{ current_user.display_name if current_user else 'Cosmos User' }}</span>
+                    <span class="role">{{ user_role|capitalize }}</span>
                 </div>
             </div>
         </header>
@@ -345,6 +382,52 @@
                     <button type="submit" class="btn btn-danger btn-sm" id="btnConfirmDeleteContainer">
                         <i class="fa-solid fa-trash-can"></i>
                         <span>Delete Container</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Change Password Modal -->
+    <div class="modal" id="changePasswordModal">
+        <div class="modal-dialog modal-sm">
+            <form method="POST" action="{{ url_for('ui.change_my_password') }}" class="modal-content" onsubmit="return validateChangePassword(event)">
+                <div class="modal-header">
+                    <div class="modal-title-group">
+                        <i class="fa-solid fa-key" style="color: var(--accent-blue);"></i>
+                        <h3>Change My Password</h3>
+                    </div>
+                    <button type="button" class="modal-close" onclick="closeModal('changePasswordModal')">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="input-wrapper" style="margin-bottom: 14px;">
+                        <label for="current_password" style="font-size: 11.5px; font-weight: 500; margin-bottom: 6px; display: block;">Current Password *</label>
+                        <div class="input-icon-group">
+                            <i class="fa-solid fa-lock icon-inside"></i>
+                            <input type="password" name="current_password" id="current_password" required placeholder="Enter current password" style="width: 100%; padding: 10px 12px 10px 36px; font-size: 13px;">
+                        </div>
+                    </div>
+                    <div class="input-wrapper" style="margin-bottom: 14px;">
+                        <label for="new_password" style="font-size: 11.5px; font-weight: 500; margin-bottom: 6px; display: block;">New Password *</label>
+                        <div class="input-icon-group">
+                            <i class="fa-solid fa-lock-open icon-inside"></i>
+                            <input type="password" name="new_password" id="new_password" required placeholder="Min 6 characters" style="width: 100%; padding: 10px 12px 10px 36px; font-size: 13px;">
+                        </div>
+                    </div>
+                    <div class="input-wrapper" style="margin-bottom: 6px;">
+                        <label for="confirm_password" style="font-size: 11.5px; font-weight: 500; margin-bottom: 6px; display: block;">Confirm New Password *</label>
+                        <div class="input-icon-group">
+                            <i class="fa-solid fa-circle-check icon-inside"></i>
+                            <input type="password" name="confirm_password" id="confirm_password" required placeholder="Repeat new password" style="width: 100%; padding: 10px 12px 10px 36px; font-size: 13px;">
+                        </div>
+                    </div>
+                    <div id="changePasswordError" class="alert alert-danger" style="display: none; margin-top: 10px; font-size: 11px; padding: 6px 10px; border-radius: 4px;"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-neutral btn-sm" onclick="closeModal('changePasswordModal')">Cancel</button>
+                    <button type="submit" class="btn btn-primary btn-sm">
+                        <i class="fa-solid fa-floppy-disk"></i>
+                        <span>Update Password</span>
                     </button>
                 </div>
             </form>
