@@ -53,6 +53,8 @@ You can customize the system database, containers, and partition keys using envi
 | `COSMOS_USER_PK_PATH` | `/id` | Partition key path for user accounts |
 | `COSMOS_LOGS_CONTAINER` / `LOGS_CONTAINER` | `cosmosactivitylogs` | Container name for activity audit logs |
 | `COSMOS_LOGS_PK_PATH` | `/id` | Partition key path for activity audit logs |
+| `DEFAULT_PASSWORD_EXPIRY_DAYS` | `90` | Default password expiry period in days (0 = never expires) |
+| `ACTIVITY_LOG_RETENTION_DAYS` | `30` | Auto-pruning retention cutoff period for activity logs |
 | `SECRET_KEY` | *(Auto-generated)* | Flask session signing secret key |
 | `PORT` | `8000` | Application listening port |
 
@@ -60,17 +62,18 @@ You can customize the system database, containers, and partition keys using envi
 
 ## 👥 User Management & Bulk Import Format
 
-Administrators can import batches of users via CSV or Excel (`.xlsx`). The file must include the following headers:
+Administrators can import batches of users via CSV or Excel (`.xlsx`) with live interactive preview and masked passwords. The file format is:
 
 ```csv
-username,email,password,enforcepasswordreset,role,display_name
-jdoe,john.doe@example.com,TempPass123!,1,contributor,John Doe
-asmith,alice.smith@example.com,TempPass456!,0,reader,Alice Smith
-admin2,admin2@example.com,SecretAdmin789!,1,admin,Backup Administrator
+username,email,display_name,password,enforcepasswordreset,role,password_expiry_days
+jdoe,john.doe@example.com,John Doe,TempPass123!,yes,contributor,90
+asmith,alice.smith@example.com,Alice Smith,TempPass456!,yes,reader,90
+admin2,admin2@example.com,Backup Administrator,SecretAdmin789!,no,admin,0
 ```
 
-- `enforcepasswordreset`: Set to `1` or `true` to require password change on initial login.
+- `enforcepasswordreset`: `yes` / `true` / `1` to require password change on initial login.
 - `role`: One of `admin`, `contributor`, or `reader` (defaults to `contributor`).
+- `password_expiry_days`: Number of days until password expires (e.g. `90`, or `0` for never expires).
 
 ---
 
