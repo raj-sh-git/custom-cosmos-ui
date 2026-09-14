@@ -99,11 +99,12 @@
             <thead>
                 <tr style="border-bottom: 2px solid var(--border-color); background-color: rgba(255,255,255,0.02);">
                     <th style="padding: 10px 14px; color: var(--text-white); font-weight: 600;">User & Identity</th>
-                    <th style="padding: 10px 14px; color: var(--text-white); font-weight: 600; width: 140px;">Role</th>
-                    <th style="padding: 10px 14px; color: var(--text-white); font-weight: 600; width: 120px; text-align: center;">Status</th>
-                    <th style="padding: 10px 14px; color: var(--text-white); font-weight: 600; width: 170px;">Last Login</th>
-                    <th style="padding: 10px 14px; color: var(--text-white); font-weight: 600; width: 160px;">Created</th>
-                    <th style="padding: 10px 14px; color: var(--text-white); font-weight: 600; width: 110px; text-align: center;">Actions</th>
+                    <th style="padding: 10px 14px; color: var(--text-white); font-weight: 600; width: 130px;">Role</th>
+                    <th style="padding: 10px 14px; color: var(--text-white); font-weight: 600; width: 100px; text-align: center;">Status</th>
+                    <th style="padding: 10px 14px; color: var(--text-white); font-weight: 600; width: 150px;">Password Expiry</th>
+                    <th style="padding: 10px 14px; color: var(--text-white); font-weight: 600; width: 150px;">Last Login</th>
+                    <th style="padding: 10px 14px; color: var(--text-white); font-weight: 600; width: 100px;">Created</th>
+                    <th style="padding: 10px 14px; color: var(--text-white); font-weight: 600; width: 80px; text-align: center;">Actions</th>
                 </tr>
             </thead>
             <tbody id="usersTableBody">
@@ -120,7 +121,7 @@
                                 <div style="font-weight: 600; color: var(--text-white); font-size: 13px; display: flex; align-items: center; gap: 6px;">
                                     <span>{{ u.display_name }}</span>
                                     {% if u.username == session.get('user', {}).get('username') %}
-                                        <span class="badge badge-blue" style="font-size: 9.5px; padding: 1px 6px;">You</span>
+                                        <span class="badge" style="background: rgba(0, 120, 212, 0.15); color: var(--primary); border: 1px solid rgba(0, 120, 212, 0.3); font-size: 9.5px; padding: 1px 6px;">You</span>
                                     {% endif %}
                                 </div>
                                 <div style="font-size: 11.5px; color: var(--text-muted); display: flex; gap: 8px; align-items: center; margin-top: 1px;">
@@ -142,7 +143,7 @@
                     <td style="padding: 10px 14px; vertical-align: middle;">
                         {% if u.role == 'admin' %}
                             <span class="badge" style="background: rgba(245, 158, 11, 0.15); color: var(--warning); border: 1px solid rgba(245, 158, 11, 0.3); font-size: 11px;">
-                                <i class="fa-solid fa-shield-halved" style="margin-right: 4px;"></i> Administrator
+                                <i class="fa-solid fa-shield-halved" style="margin-right: 4px;"></i> Admin
                             </span>
                         {% elif u.role == 'contributor' %}
                             <span class="badge" style="background: rgba(16, 185, 129, 0.15); color: var(--success); border: 1px solid rgba(16, 185, 129, 0.3); font-size: 11px;">
@@ -167,8 +168,31 @@
                         </form>
                     </td>
 
+                    <!-- Password Expiry -->
+                    <td style="padding: 10px 14px; vertical-align: middle; font-size: 12px;">
+                        {% if u.password_expiry_days == 0 %}
+                            <span class="badge" style="background: rgba(255, 255, 255, 0.06); color: var(--text-muted); border: 1px solid var(--border-color); font-size: 10px;">Never Expires</span>
+                        {% elif u.is_expired %}
+                            <span class="badge" style="background: rgba(239, 68, 68, 0.15); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.3); font-size: 10px; font-weight: 600;">
+                                <i class="fa-solid fa-triangle-exclamation" style="margin-right: 2px;"></i> Expired
+                            </span>
+                        {% elif u.days_remaining is not none and u.days_remaining <= 7 %}
+                            <span class="badge" style="background: rgba(245, 158, 11, 0.15); color: var(--warning); border: 1px solid rgba(245, 158, 11, 0.3); font-size: 10px; font-weight: 600;">
+                                {{ u.days_remaining }}d left ({{ u.password_expiry_days }}d max)
+                            </span>
+                        {% elif u.days_remaining is not none %}
+                            <span class="badge" style="background: rgba(255, 255, 255, 0.06); color: var(--text-normal); border: 1px solid var(--border-color); font-family: var(--font-code); font-size: 10px;">
+                                {{ u.days_remaining }}d left ({{ u.password_expiry_days }}d)
+                            </span>
+                        {% else %}
+                            <span class="badge" style="background: rgba(255, 255, 255, 0.06); color: var(--text-normal); border: 1px solid var(--border-color); font-family: var(--font-code); font-size: 10px;">
+                                {{ u.password_expiry_days or 90 }}d max
+                            </span>
+                        {% endif %}
+                    </td>
+
                     <!-- Last Login -->
-                    <td style="padding: 10px 14px; vertical-align: middle; color: var(--text-muted); font-size: 12px;">
+                    <td style="padding: 10px 14px; vertical-align: middle; color: var(--text-muted); font-size: 11.5px; font-family: var(--font-code);">
                         {% if u.last_login %}
                             {{ u.last_login[:19].replace('T', ' ') }}
                         {% else %}
@@ -177,7 +201,7 @@
                     </td>
 
                     <!-- Created At -->
-                    <td style="padding: 10px 14px; vertical-align: middle; color: var(--text-muted); font-size: 12px;">
+                    <td style="padding: 10px 14px; vertical-align: middle; color: var(--text-muted); font-size: 11.5px; font-family: var(--font-code);">
                         {% if u.created_at %}
                             {{ u.created_at[:10] }}
                         {% else %}
@@ -185,28 +209,53 @@
                         {% endif %}
                     </td>
 
-                    <!-- Actions Dropdown / Buttons -->
-                    <td style="padding: 10px 14px; vertical-align: middle; text-align: center;">
-                        <div style="display: inline-flex; gap: 4px;">
-                            <!-- Edit -->
-                            <button type="button" class="btn-action" onclick="openEditUserModal('{{ u.username }}', '{{ u.display_name }}', '{{ u.email }}', '{{ u.role }}')" title="Edit User">
-                                <i class="fa-solid fa-pen-to-square"></i>
+                    <!-- Actions 3-dot dropdown -->
+                    <td style="padding: 10px 14px; text-align: center; position: relative; vertical-align: middle;">
+                        <div class="action-dropdown">
+                            <button type="button" class="action-dropdown-btn" onclick="toggleActionDropdown(event, this)" title="Actions">
+                                <i class="fa-solid fa-ellipsis-vertical"></i>
                             </button>
-                            <!-- Reset Password -->
-                            <button type="button" class="btn-action" onclick="openResetPasswordModal('{{ u.username }}')" title="Reset Password">
-                                <i class="fa-solid fa-key" style="color: var(--warning);"></i>
-                            </button>
-                            <!-- Delete -->
-                            <button type="button" class="btn-action text-danger" onclick="openDeleteUserModal('{{ u.username }}')" title="Delete User" {% if u.username == session.get('user', {}).get('username') %}disabled style="opacity: 0.3; cursor: not-allowed;"{% endif %}>
-                                <i class="fa-solid fa-trash-can"></i>
-                            </button>
+                            <div class="action-dropdown-menu">
+                                <!-- Edit User -->
+                                <button type="button" class="action-dropdown-item" onclick="openEditUserModal('{{ u.username }}', '{{ u.display_name }}', '{{ u.email }}', '{{ u.role }}', '{{ u.password_expiry_days }}')">
+                                    <i class="fa-solid fa-user-pen"></i>
+                                    <span>Edit User & Role</span>
+                                </button>
+                                <!-- Reset Password -->
+                                <button type="button" class="action-dropdown-item" onclick="openResetPasswordModal('{{ u.username }}')">
+                                    <i class="fa-solid fa-key" style="color: var(--warning);"></i>
+                                    <span>Reset Password</span>
+                                </button>
+                                <!-- Toggle Active Status -->
+                                <form method="POST" action="{{ url_for('ui.toggle_user_status') }}" style="margin: 0;">
+                                    <input type="hidden" name="username" value="{{ u.username }}">
+                                    <input type="hidden" name="is_active" value="{% if u.is_active %}0{% else %}1{% endif %}">
+                                    <button type="submit" class="action-dropdown-item" {% if u.username == session.get('user', {}).get('username') %}disabled style="opacity: 0.5; cursor: not-allowed;"{% endif %}>
+                                        {% if u.is_active %}
+                                            <i class="fa-solid fa-ban" style="color: var(--warning);"></i>
+                                            <span>Disable Account</span>
+                                        {% else %}
+                                            <i class="fa-solid fa-circle-check" style="color: var(--success);"></i>
+                                            <span>Enable Account</span>
+                                        {% endif %}
+                                    </button>
+                                </form>
+                                <div class="action-dropdown-divider"></div>
+                                <!-- Delete User -->
+                                {% if u.username != session.get('user', {}).get('username') %}
+                                <button type="button" class="action-dropdown-item text-danger danger" onclick="openDeleteUserModal('{{ u.username }}')">
+                                    <i class="fa-solid fa-trash-can"></i>
+                                    <span>Delete Account</span>
+                                </button>
+                                {% endif %}
+                            </div>
                         </div>
                     </td>
                 </tr>
                 {% endfor %}
             {% else %}
                 <tr>
-                    <td colspan="6" class="table-empty-state">
+                    <td colspan="7" class="table-empty-state">
                         <i class="fa-solid fa-users empty-icon"></i>
                         <h4>No Users Found</h4>
                         <p>No user accounts have been created yet.</p>
@@ -218,280 +267,661 @@
     </div>
 </div>
 
+<!-- =========================================================================
+     MODALS
+     ========================================================================= -->
+
 <!-- Modal 1: Add Single User Modal -->
 <div class="modal" id="addUserModal">
-    <div class="modal-dialog modal-md">
-        <form method="POST" action="{{ url_for('ui.create_user') }}" class="modal-content" onsubmit="return validateAddUserForm(event)">
+    <div class="modal-dialog modal-md" style="max-width: 520px; width: 100%;">
+        <div class="modal-content">
             <div class="modal-header">
                 <div class="modal-title-group">
-                    <i class="fa-solid fa-user-plus" style="color: var(--accent-blue);"></i>
+                    <i class="fa-solid fa-user-plus title-icon" style="color: var(--accent-blue);"></i>
                     <h3>Add New User</h3>
                 </div>
                 <button type="button" class="modal-close" onclick="closeModal('addUserModal')">&times;</button>
             </div>
-            <div class="modal-body">
-                <div class="input-wrapper" style="margin-bottom: 14px;">
-                    <label for="add_username">Username *</label>
-                    <div class="input-icon-group">
-                        <i class="fa-solid fa-user icon-inside"></i>
-                        <input type="text" name="username" id="add_username" required placeholder="e.g. jdoe" style="padding-left: 36px; font-size: 13px;">
+            <form method="POST" action="{{ url_for('ui.create_user') }}" onsubmit="return validateAddUserForm(event)">
+                <div class="modal-body" style="display: flex; flex-direction: column; gap: 14px; padding: 20px;">
+                    <div>
+                        <label class="form-label">Username *</label>
+                        <input type="text" name="username" id="addUsername" required placeholder="e.g. john" class="form-control" style="font-family: var(--font-code);">
                     </div>
-                </div>
-
-                <div class="input-wrapper" style="margin-bottom: 14px;">
-                    <label for="add_display_name">Display Name</label>
-                    <div class="input-icon-group">
-                        <i class="fa-solid fa-id-badge icon-inside"></i>
-                        <input type="text" name="display_name" id="add_display_name" placeholder="e.g. John Doe" style="padding-left: 36px; font-size: 13px;">
+                    <div style="display: flex; gap: 12px;">
+                        <div style="flex: 1;">
+                            <label class="form-label">Display Name</label>
+                            <input type="text" name="display_name" placeholder="e.g. John Doe" class="form-control">
+                        </div>
+                        <div style="flex: 1;">
+                            <label class="form-label">Email Address</label>
+                            <input type="email" name="email" placeholder="john@example.com" class="form-control">
+                        </div>
                     </div>
-                </div>
-
-                <div class="input-wrapper" style="margin-bottom: 14px;">
-                    <label for="add_email">Email Address</label>
-                    <div class="input-icon-group">
-                        <i class="fa-solid fa-envelope icon-inside"></i>
-                        <input type="email" name="email" id="add_email" placeholder="john.doe@company.com" style="padding-left: 36px; font-size: 13px;">
+                    <div style="display: flex; gap: 12px;">
+                        <div style="flex: 1.2;">
+                            <label class="form-label">Role *</label>
+                            <select name="role" class="form-control db-select" style="width: 100%;">
+                                <option value="contributor" selected>Contributor (Read & Write)</option>
+                                <option value="reader">Reader (View & Query only)</option>
+                                <option value="admin">Admin (User Mgmt & Logs)</option>
+                            </select>
+                        </div>
+                        <div style="flex: 0.8;">
+                            <label class="form-label">Password Expiry</label>
+                            <div style="display: flex; align-items: center; gap: 6px;">
+                                <input type="number" name="password_expiry_days" id="addPasswordExpiry" value="90" min="0" max="3650" class="form-control" style="width: 90px; text-align: center;">
+                                <span style="font-size: 12px; color: var(--text-muted);">Days (0=never)</span>
+                            </div>
+                        </div>
                     </div>
-                </div>
-
-                <div class="input-wrapper" style="margin-bottom: 14px;">
-                    <label for="add_role">Role & RBAC Permissions *</label>
-                    <select name="role" id="add_role" class="form-control db-select" style="font-size: 13px;">
-                        <option value="contributor" selected>Contributor (Read & Write databases/containers/documents)</option>
-                        <option value="reader">Reader (View & Query documents only)</option>
-                        <option value="admin">Administrator (Full Access + User Management & Logs)</option>
-                    </select>
-                </div>
-
-                <div class="input-wrapper" style="margin-bottom: 14px;">
-                    <label for="add_password">Initial Password *</label>
-                    <div class="input-icon-group">
-                        <i class="fa-solid fa-lock icon-inside"></i>
-                        <input type="password" name="password" id="add_password" required placeholder="Min 6 characters" style="padding-left: 36px; font-size: 13px;">
+                    <div>
+                        <label class="form-label">Initial Password *</label>
+                        <input type="password" name="password" id="addPassword" required placeholder="Minimum 6 characters" class="form-control">
                     </div>
+                    <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px;">
+                        <input type="checkbox" name="enforce_reset" id="addEnforceReset" value="1" checked style="width: 16px; height: 16px; cursor: pointer;">
+                        <label for="addEnforceReset" style="font-size: 12.5px; color: var(--text-normal); cursor: pointer; margin-bottom: 0;">
+                            Require password change on first login
+                        </label>
+                    </div>
+                    <div id="addUserError" style="display: none; color: #f87171; font-size: 12px;"></div>
                 </div>
-
-                <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px;">
-                    <input type="checkbox" name="enforce_reset" id="add_enforce_reset" value="1" checked style="accent-color: var(--primary); width: 16px; height: 16px;">
-                    <label for="add_enforce_reset" style="font-size: 12px; color: var(--text-normal); cursor: pointer;">Require password change on first login</label>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-neutral" onclick="closeModal('addUserModal')">Cancel</button>
+                    <button type="submit" class="btn btn-primary" style="background-color: var(--accent-blue); border-color: var(--accent-blue);">
+                        <i class="fa-solid fa-user-plus"></i>
+                        <span>Create User</span>
+                    </button>
                 </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-neutral btn-sm" onclick="closeModal('addUserModal')">Cancel</button>
-                <button type="submit" class="btn btn-primary btn-sm">
-                    <i class="fa-solid fa-user-check"></i>
-                    <span>Create User</span>
-                </button>
-            </div>
-        </form>
+            </form>
+        </div>
     </div>
 </div>
 
-<!-- Modal 2: Bulk Import Users Modal -->
+<!-- Modal 2: Bulk Import Users (CSV / Excel) with Live Preview -->
 <div class="modal" id="bulkUsersModal">
-    <div class="modal-dialog modal-md">
-        <form method="POST" action="{{ url_for('ui.bulk_create_users') }}" enctype="multipart/form-data" class="modal-content">
+    <div class="modal-dialog modal-lg" style="max-width: 840px; width: 100%;">
+        <div class="modal-content">
             <div class="modal-header">
                 <div class="modal-title-group">
-                    <i class="fa-solid fa-file-import" style="color: var(--accent-purple);"></i>
-                    <h3>Bulk Import Users</h3>
+                    <i class="fa-solid fa-file-import title-icon" style="color: var(--accent-purple);"></i>
+                    <h3 id="bulkUsersModalTitle">Bulk Import Users (CSV / Excel)</h3>
                 </div>
                 <button type="button" class="modal-close" onclick="closeModal('bulkUsersModal')">&times;</button>
             </div>
-            <div class="modal-body">
-                <p style="font-size: 12.5px; color: var(--text-muted); line-height: 1.5; margin-bottom: 14px;">
-                    Upload a <strong>CSV</strong> or <strong>Excel (.xlsx)</strong> file with user credentials and roles.
-                </p>
-
-                <div style="background: rgba(0, 120, 212, 0.08); border: 1px solid rgba(0, 120, 212, 0.25); border-radius: 8px; padding: 12px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
-                    <div>
-                        <span style="font-size: 12px; font-weight: 600; color: var(--text-white); display: block;">Sample Template</span>
-                        <span style="font-size: 11px; color: var(--text-muted);">Columns: username, email, password, enforcepasswordreset, role, display_name</span>
+            
+            <!-- STEP 1: Upload & Format View -->
+            <div id="bulkUploadStep1" style="display: block;">
+                <div class="modal-body" style="display: flex; flex-direction: column; gap: 16px; padding: 20px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                        <p style="font-size: 12.5px; color: var(--text-muted); margin: 0;">
+                            Upload a <code>.csv</code> or <code>.xlsx</code> file. You will preview accounts before creating them.
+                        </p>
+                        <a href="{{ url_for('ui.download_user_template') }}" class="btn btn-neutral btn-sm" style="display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--accent-blue);">
+                            <i class="fa-solid fa-download"></i> Download CSV Template
+                        </a>
                     </div>
-                    <a href="{{ url_for('ui.download_user_template') }}" class="btn btn-neutral btn-sm" style="font-size: 11.5px; display: inline-flex; align-items: center; gap: 5px;">
-                        <i class="fa-solid fa-download"></i> CSV Template
-                    </a>
+
+                    <!-- Clean Aligned Format Guide Table -->
+                    <div style="background: rgba(255,255,255,0.02); border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden;">
+                        <div style="padding: 8px 12px; background: rgba(255,255,255,0.03); border-bottom: 1px solid var(--border-color); font-size: 12px; font-weight: 600; color: var(--text-white);">
+                            <i class="fa-solid fa-table-columns" style="color: var(--accent-purple); margin-right: 6px;"></i> Expected Columns Specification
+                        </div>
+                        <div class="table-responsive" style="margin: 0;">
+                            <table class="table table-sm" style="width: 100%; border-collapse: collapse; font-size: 11.5px; text-align: left; margin-bottom: 0;">
+                                <thead>
+                                    <tr style="border-bottom: 1px solid var(--border-color); background: rgba(0,0,0,0.2); color: var(--text-muted);">
+                                        <th style="padding: 6px 10px;">Column Name</th>
+                                        <th style="padding: 6px 10px; width: 80px;">Required</th>
+                                        <th style="padding: 6px 10px;">Accepted Values / Format</th>
+                                        <th style="padding: 6px 10px; width: 100px;">Default</th>
+                                        <th style="padding: 6px 10px;">Example</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                                        <td style="padding: 6px 10px; font-family: var(--font-code); color: var(--accent-blue); font-weight: 600;">username</td>
+                                        <td style="padding: 6px 10px;"><span class="badge badge-danger" style="font-size: 9px; padding: 1px 4px;">YES</span></td>
+                                        <td style="padding: 6px 10px; color: var(--text-normal);">Unique alphanumeric login ID</td>
+                                        <td style="padding: 6px 10px; color: var(--text-muted);">--</td>
+                                        <td style="padding: 6px 10px; font-family: var(--font-code); color: var(--text-muted);">john</td>
+                                    </tr>
+                                    <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                                        <td style="padding: 6px 10px; font-family: var(--font-code); color: var(--accent-blue); font-weight: 600;">display_name</td>
+                                        <td style="padding: 6px 10px;"><span class="badge badge-neutral" style="font-size: 9px; padding: 1px 4px;">Optional</span></td>
+                                        <td style="padding: 6px 10px; color: var(--text-normal);">Full friendly name</td>
+                                        <td style="padding: 6px 10px; color: var(--text-muted);">username</td>
+                                        <td style="padding: 6px 10px; font-family: var(--font-code); color: var(--text-muted);">John Doe</td>
+                                    </tr>
+                                    <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                                        <td style="padding: 6px 10px; font-family: var(--font-code); color: var(--accent-blue); font-weight: 600;">email</td>
+                                        <td style="padding: 6px 10px;"><span class="badge badge-neutral" style="font-size: 9px; padding: 1px 4px;">Optional</span></td>
+                                        <td style="padding: 6px 10px; color: var(--text-normal);">Valid email address</td>
+                                        <td style="padding: 6px 10px; color: var(--text-muted);">(empty)</td>
+                                        <td style="padding: 6px 10px; font-family: var(--font-code); color: var(--text-muted);">john@example.com</td>
+                                    </tr>
+                                    <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                                        <td style="padding: 6px 10px; font-family: var(--font-code); color: var(--accent-blue); font-weight: 600;">password</td>
+                                        <td style="padding: 6px 10px;"><span class="badge badge-danger" style="font-size: 9px; padding: 1px 4px;">YES</span></td>
+                                        <td style="padding: 6px 10px; color: var(--text-normal);">Initial plain password (&gt;= 6 chars)</td>
+                                        <td style="padding: 6px 10px; color: var(--text-muted);">--</td>
+                                        <td style="padding: 6px 10px; font-family: var(--font-code); color: var(--text-muted);">TempPass123!</td>
+                                    </tr>
+                                    <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                                        <td style="padding: 6px 10px; font-family: var(--font-code); color: var(--accent-blue); font-weight: 600;">role</td>
+                                        <td style="padding: 6px 10px;"><span class="badge badge-neutral" style="font-size: 9px; padding: 1px 4px;">Optional</span></td>
+                                        <td style="padding: 6px 10px; color: var(--text-normal);"><code style="color: var(--accent-purple);">contributor</code>, <code style="color: var(--accent-purple);">reader</code>, or <code style="color: var(--accent-purple);">admin</code></td>
+                                        <td style="padding: 6px 10px; color: var(--text-muted);">contributor</td>
+                                        <td style="padding: 6px 10px; font-family: var(--font-code); color: var(--text-muted);">contributor</td>
+                                    </tr>
+                                    <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                                        <td style="padding: 6px 10px; font-family: var(--font-code); color: var(--accent-blue); font-weight: 600;">enforcepasswordreset</td>
+                                        <td style="padding: 6px 10px;"><span class="badge badge-neutral" style="font-size: 9px; padding: 1px 4px;">Optional</span></td>
+                                        <td style="padding: 6px 10px; color: var(--text-normal);"><code style="color: var(--warning);">yes</code>, <code style="color: var(--warning);">no</code>, <code style="color: var(--warning);">true</code>, <code style="color: var(--warning);">false</code></td>
+                                        <td style="padding: 6px 10px; color: var(--text-muted);">yes</td>
+                                        <td style="padding: 6px 10px; font-family: var(--font-code); color: var(--text-muted);">yes</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 6px 10px; font-family: var(--font-code); color: var(--accent-blue); font-weight: 600;">password_expiry_days</td>
+                                        <td style="padding: 6px 10px;"><span class="badge badge-neutral" style="font-size: 9px; padding: 1px 4px;">Optional</span></td>
+                                        <td style="padding: 6px 10px; color: var(--text-normal);">Number of days (0 = never expires)</td>
+                                        <td style="padding: 6px 10px; color: var(--text-muted);">90</td>
+                                        <td style="padding: 6px 10px; font-family: var(--font-code); color: var(--text-muted);">90</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- File Picker Area -->
+                    <div style="background: rgba(0,0,0,0.15); border: 2px dashed var(--border-color); border-radius: 8px; padding: 22px; text-align: center;">
+                        <i class="fa-solid fa-cloud-arrow-up" style="font-size: 30px; color: var(--accent-purple); margin-bottom: 8px; display: block;"></i>
+                        <p style="font-size: 13px; color: var(--text-white); font-weight: 500; margin-bottom: 8px;">
+                            Choose a CSV or Excel (.xlsx) file to upload
+                        </p>
+                        <div style="display: flex; justify-content: center; align-items: center; gap: 10px; flex-wrap: wrap;">
+                            <label class="btn btn-neutral btn-sm" style="cursor: pointer; margin-bottom: 0;">
+                                <i class="fa-solid fa-folder-open"></i> Browse File
+                                <input type="file" id="bulkUsersFileInput" accept=".csv,.xlsx" style="display: none;" onchange="handleBulkUsersFileSelected(this)">
+                            </label>
+                            <span id="bulkFileNamePreview" style="font-size: 12.5px; color: var(--text-muted); font-weight: 500;">No file chosen</span>
+                        </div>
+                    </div>
+
+                    <div id="bulkUploadStep1Error" style="display: none; padding: 8px 12px; background: rgba(239,68,68,0.1); border-left: 3px solid #ef4444; border-radius: 4px; font-size: 12px; color: #fca5a5;"></div>
                 </div>
 
-                <div class="input-wrapper">
-                    <label for="bulk_user_file">Select CSV or Excel File *</label>
-                    <input type="file" name="file" id="bulk_user_file" required accept=".csv, .xlsx" style="font-size: 13px;">
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-neutral" onclick="closeModal('bulkUsersModal')">Cancel</button>
+                    <button type="button" id="btnPreviewBulkUsers" class="btn btn-primary" onclick="previewBulkUsers()" disabled style="background-color: var(--accent-purple); border-color: var(--accent-purple);">
+                        <i class="fa-solid fa-magnifying-glass"></i>
+                        <span>Preview Users</span>
+                    </button>
                 </div>
             </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-neutral btn-sm" onclick="closeModal('bulkUsersModal')">Cancel</button>
-                <button type="submit" class="btn btn-primary btn-sm">
-                    <i class="fa-solid fa-upload"></i>
-                    <span>Start Bulk Import</span>
-                </button>
+
+            <!-- STEP 2: Live Preview View -->
+            <div id="bulkUploadStep2" style="display: none;">
+                <div class="modal-body" style="display: flex; flex-direction: column; gap: 14px; padding: 20px;">
+                    <!-- Summary Stats Bar -->
+                    <div id="bulkPreviewSummaryBar" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 10px 14px; background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; font-size: 12.5px;">
+                        <!-- Injected summary stats -->
+                    </div>
+
+                    <!-- Scrollable Preview Table with Masked Passwords -->
+                    <div class="table-responsive" style="max-height: 320px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;">
+                        <table class="table table-bordered table-sm align-middle small" style="width: 100%; border-collapse: collapse; text-align: left; margin-bottom: 0;">
+                            <thead>
+                                <tr style="border-bottom: 1px solid var(--border-color); background: rgba(0,0,0,0.3); position: sticky; top: 0; z-index: 1;">
+                                    <th style="padding: 8px; width: 40px; text-align: center; color: var(--text-white);">#</th>
+                                    <th style="padding: 8px; color: var(--text-white);">Username</th>
+                                    <th style="padding: 8px; color: var(--text-white);">Display Name</th>
+                                    <th style="padding: 8px; color: var(--text-white);">Email</th>
+                                    <th style="padding: 8px; width: 95px; text-align: center; color: var(--text-white);">Role</th>
+                                    <th style="padding: 8px; width: 90px; text-align: center; color: var(--text-white);">Password</th>
+                                    <th style="padding: 8px; width: 85px; text-align: center; color: var(--text-white);">Reset</th>
+                                    <th style="padding: 8px; width: 75px; text-align: center; color: var(--text-white);">Expiry</th>
+                                    <th style="padding: 8px; width: 100px; text-align: center; color: var(--text-white);">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="bulkPreviewTableBody">
+                                <!-- Injected preview rows -->
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div id="bulkUploadStep2Error" style="display: none; padding: 8px 12px; background: rgba(239,68,68,0.1); border-left: 3px solid #ef4444; border-radius: 4px; font-size: 12px; color: #fca5a5;"></div>
+                </div>
+
+                <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
+                    <button type="button" class="btn btn-neutral btn-sm" onclick="resetBulkUsersModal()">
+                        <i class="fa-solid fa-arrow-left"></i> Choose Another File
+                    </button>
+                    <div style="display: flex; gap: 8px;">
+                        <button type="button" class="btn btn-neutral" onclick="closeModal('bulkUsersModal')">Cancel</button>
+                        <button type="button" id="btnConfirmBulkCreate" class="btn btn-primary" onclick="confirmBulkUsersCreate()" style="background-color: var(--accent-purple); border-color: var(--accent-purple);">
+                            <i class="fa-solid fa-user-plus"></i>
+                            <span id="btnConfirmBulkCreateText">Confirm & Create Users</span>
+                        </button>
+                    </div>
+                </div>
             </div>
-        </form>
+
+        </div>
     </div>
 </div>
 
-<!-- Modal 3: Edit User Modal -->
+<!-- Modal 3: Edit User & Role Modal -->
 <div class="modal" id="editUserModal">
-    <div class="modal-dialog modal-md">
-        <form method="POST" action="{{ url_for('ui.edit_user') }}" class="modal-content">
+    <div class="modal-dialog modal-md" style="max-width: 500px; width: 100%;">
+        <div class="modal-content">
             <div class="modal-header">
                 <div class="modal-title-group">
-                    <i class="fa-solid fa-user-pen" style="color: var(--accent-blue);"></i>
-                    <h3>Edit User Profile</h3>
+                    <i class="fa-solid fa-user-pen title-icon" style="color: var(--accent-blue);"></i>
+                    <h3>Edit User & Role</h3>
                 </div>
                 <button type="button" class="modal-close" onclick="closeModal('editUserModal')">&times;</button>
             </div>
-            <div class="modal-body">
-                <div class="input-wrapper" style="margin-bottom: 14px;">
-                    <label>Username</label>
-                    <input type="text" name="username" id="edit_username" readonly style="opacity: 0.7; cursor: not-allowed; background: rgba(0,0,0,0.2);">
+            <form method="POST" action="{{ url_for('ui.edit_user') }}">
+                <input type="hidden" name="username" id="editUserUsername">
+                <div class="modal-body" style="display: flex; flex-direction: column; gap: 14px; padding: 20px;">
+                    <div>
+                        <label class="form-label">Username</label>
+                        <input type="text" id="editUserDisplayUsername" readonly class="form-control" style="background: rgba(0,0,0,0.2); font-family: var(--font-code);">
+                    </div>
+                    <div>
+                        <label class="form-label">Display Name</label>
+                        <input type="text" name="display_name" id="editUserDisplayName" class="form-control">
+                    </div>
+                    <div>
+                        <label class="form-label">Email Address</label>
+                        <input type="email" name="email" id="editUserEmail" class="form-control">
+                    </div>
+                    <div style="display: flex; gap: 12px;">
+                        <div style="flex: 1.2;">
+                            <label class="form-label">Role</label>
+                            <select name="role" id="editUserRole" class="form-control db-select" style="width: 100%;">
+                                <option value="contributor">Contributor (Read & Write)</option>
+                                <option value="reader">Reader (View & Query only)</option>
+                                <option value="admin">Administrator (User Mgmt & Logs)</option>
+                            </select>
+                        </div>
+                        <div style="flex: 0.8;">
+                            <label class="form-label">Password Expiry</label>
+                            <div style="display: flex; align-items: center; gap: 6px;">
+                                <input type="number" name="password_expiry_days" id="editUserPasswordExpiry" min="0" max="3650" class="form-control" style="width: 90px; text-align: center;">
+                                <span style="font-size: 12px; color: var(--text-muted);">Days (0=never)</span>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-
-                <div class="input-wrapper" style="margin-bottom: 14px;">
-                    <label for="edit_display_name">Display Name</label>
-                    <input type="text" name="display_name" id="edit_display_name" placeholder="Display Name">
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-neutral" onclick="closeModal('editUserModal')">Cancel</button>
+                    <button type="submit" class="btn btn-primary" style="background-color: var(--accent-blue); border-color: var(--accent-blue);">
+                        <i class="fa-solid fa-floppy-disk"></i>
+                        <span>Save Changes</span>
+                    </button>
                 </div>
-
-                <div class="input-wrapper" style="margin-bottom: 14px;">
-                    <label for="edit_email">Email Address</label>
-                    <input type="email" name="email" id="edit_email" placeholder="email@company.com">
-                </div>
-
-                <div class="input-wrapper">
-                    <label for="edit_role">Role & RBAC Permissions</label>
-                    <select name="role" id="edit_role" class="form-control db-select">
-                        <option value="contributor">Contributor (Read & Write)</option>
-                        <option value="reader">Reader (View & Query only)</option>
-                        <option value="admin">Administrator (Full Access + Users & Logs)</option>
-                    </select>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-neutral btn-sm" onclick="closeModal('editUserModal')">Cancel</button>
-                <button type="submit" class="btn btn-primary btn-sm">
-                    <i class="fa-solid fa-floppy-disk"></i>
-                    <span>Save Changes</span>
-                </button>
-            </div>
-        </form>
+            </form>
+        </div>
     </div>
 </div>
 
 <!-- Modal 4: Reset User Password Modal -->
 <div class="modal" id="resetPasswordModal">
-    <div class="modal-dialog modal-sm">
-        <form method="POST" action="{{ url_for('ui.reset_user_password') }}" class="modal-content">
+    <div class="modal-dialog modal-md" style="max-width: 480px; width: 100%;">
+        <div class="modal-content">
             <div class="modal-header">
                 <div class="modal-title-group">
-                    <i class="fa-solid fa-key" style="color: var(--warning);"></i>
+                    <i class="fa-solid fa-key title-icon" style="color: var(--warning);"></i>
                     <h3>Reset User Password</h3>
                 </div>
                 <button type="button" class="modal-close" onclick="closeModal('resetPasswordModal')">&times;</button>
             </div>
-            <div class="modal-body">
-                <input type="hidden" name="username" id="reset_target_username">
-                <p style="font-size: 12.5px; color: var(--text-normal); margin-bottom: 14px;">
-                    Setting a new password for <strong id="resetTargetDisplay" style="color: var(--text-white);"></strong>:
-                </p>
-
-                <div class="input-wrapper" style="margin-bottom: 14px;">
-                    <label for="reset_new_password">New Temporary Password *</label>
-                    <input type="password" name="new_password" id="reset_new_password" required placeholder="Min 6 characters">
+            <form method="POST" action="{{ url_for('ui.reset_user_password') }}">
+                <input type="hidden" name="username" id="resetPasswordUsername">
+                <div class="modal-body" style="display: flex; flex-direction: column; gap: 14px; padding: 20px;">
+                    <p style="font-size: 13px; color: var(--text-normal);">
+                        Set a new temporary password for user: <code id="resetPasswordDisplayUsername" style="color: var(--warning);"></code>
+                    </p>
+                    <div>
+                        <label class="form-label">New Temporary Password *</label>
+                        <input type="password" name="new_password" required placeholder="Minimum 6 characters" class="form-control">
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <input type="checkbox" name="enforce_reset" id="resetEnforceCheck" value="1" checked style="width: 16px; height: 16px; cursor: pointer;">
+                        <label for="resetEnforceCheck" style="font-size: 12.5px; color: var(--text-normal); cursor: pointer; margin-bottom: 0;">
+                            Require user to change password on next login
+                        </label>
+                    </div>
                 </div>
-
-                <div style="display: flex; align-items: center; gap: 8px;">
-                    <input type="checkbox" name="enforce_reset" id="reset_enforce_reset" value="1" checked style="accent-color: var(--primary); width: 16px; height: 16px;">
-                    <label for="reset_enforce_reset" style="font-size: 12px; color: var(--text-normal); cursor: pointer;">Require change on next login</label>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-neutral" onclick="closeModal('resetPasswordModal')">Cancel</button>
+                    <button type="submit" class="btn btn-primary" style="background-color: var(--warning); border-color: var(--warning); color: #000;">
+                        <i class="fa-solid fa-check"></i>
+                        <span>Reset Password</span>
+                    </button>
                 </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-neutral btn-sm" onclick="closeModal('resetPasswordModal')">Cancel</button>
-                <button type="submit" class="btn btn-primary btn-sm">
-                    <i class="fa-solid fa-check"></i>
-                    <span>Reset Password</span>
-                </button>
-            </div>
-        </form>
+            </form>
+        </div>
     </div>
 </div>
 
 <!-- Modal 5: Delete User Confirmation Modal -->
 <div class="modal" id="deleteUserModal">
-    <div class="modal-dialog modal-sm">
-        <form method="POST" action="{{ url_for('ui.delete_user') }}" class="modal-content">
+    <div class="modal-dialog modal-md" style="max-width: 460px;">
+        <div class="modal-content">
             <div class="modal-header">
                 <div class="modal-title-group text-danger">
-                    <i class="fa-solid fa-trash-can"></i>
+                    <i class="fa-solid fa-trash-can title-icon"></i>
                     <h3>Delete User Account</h3>
                 </div>
                 <button type="button" class="modal-close" onclick="closeModal('deleteUserModal')">&times;</button>
             </div>
-            <div class="modal-body">
-                <input type="hidden" name="username" id="delete_target_username">
-                <p style="font-size: 13px; color: var(--text-normal); line-height: 1.5;">
-                    Are you sure you want to permanently delete user account <strong id="deleteTargetDisplay" style="color: var(--text-white);"></strong>?
-                </p>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-neutral btn-sm" onclick="closeModal('deleteUserModal')">Cancel</button>
-                <button type="submit" class="btn btn-danger btn-sm">
-                    <i class="fa-solid fa-trash-can"></i>
-                    <span>Confirm Delete</span>
-                </button>
-            </div>
-        </form>
+            <form method="POST" action="{{ url_for('ui.delete_user') }}">
+                <input type="hidden" name="username" id="deleteUserUsername">
+                <div class="modal-body" style="display: flex; flex-direction: column; gap: 14px; padding: 20px;">
+                    <p style="font-size: 13.5px; color: var(--text-normal); line-height: 1.5;">
+                        Are you sure you want to permanently delete user <code id="deleteUserDisplayUsername" style="color: #f87171;"></code>?
+                    </p>
+                    <div style="padding: 10px 14px; background: rgba(239,68,68,0.08); border-left: 3px solid #ef4444; border-radius: 4px; font-size: 12px; color: #fca5a5;">
+                        <i class="fa-solid fa-triangle-exclamation" style="margin-right: 4px;"></i> This user will immediately lose access to Cosmos UI.
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-neutral" onclick="closeModal('deleteUserModal')">Cancel</button>
+                    <button type="submit" class="btn btn-danger" style="display: flex; align-items: center; gap: 6px;">
+                        <i class="fa-solid fa-trash-can"></i>
+                        <span>Delete User</span>
+                    </button>
+                </div>
+            </form>
+        </div>
     </div>
 </div>
 
 <script>
 function openAddUserModal() {
-    document.getElementById('add_username').value = '';
-    document.getElementById('add_display_name').value = '';
-    document.getElementById('add_email').value = '';
-    document.getElementById('add_password').value = '';
+    document.getElementById('addUsername').value = '';
+    document.getElementById('addPassword').value = '';
+    document.getElementById('addPasswordExpiry').value = '90';
+    document.getElementById('addUserError').style.display = 'none';
     openModal('addUserModal');
 }
 
 function openBulkUsersModal() {
+    resetBulkUsersModal();
     openModal('bulkUsersModal');
 }
 
-function openEditUserModal(username, displayName, email, role) {
-    document.getElementById('edit_username').value = username;
-    document.getElementById('edit_display_name').value = displayName;
-    document.getElementById('edit_email').value = email;
-    document.getElementById('edit_role').value = role;
+function resetBulkUsersModal() {
+    document.getElementById('bulkUploadStep1').style.display = 'block';
+    document.getElementById('bulkUploadStep2').style.display = 'none';
+    const fileInput = document.getElementById('bulkUsersFileInput');
+    if (fileInput) fileInput.value = '';
+    document.getElementById('bulkFileNamePreview').textContent = 'No file chosen';
+    document.getElementById('btnPreviewBulkUsers').disabled = true;
+    document.getElementById('bulkUploadStep1Error').style.display = 'none';
+    document.getElementById('bulkUploadStep2Error').style.display = 'none';
+    const modalTitle = document.getElementById('bulkUsersModalTitle');
+    if (modalTitle) modalTitle.textContent = 'Bulk Import Users (CSV / Excel)';
+}
+
+function handleBulkUsersFileSelected(input) {
+    const preview = document.getElementById('bulkFileNamePreview');
+    const previewBtn = document.getElementById('btnPreviewBulkUsers');
+    if (input.files && input.files.length > 0) {
+        preview.textContent = input.files[0].name;
+        preview.style.color = 'var(--text-white)';
+        previewBtn.disabled = false;
+    } else {
+        preview.textContent = 'No file chosen';
+        preview.style.color = 'var(--text-muted)';
+        previewBtn.disabled = true;
+    }
+}
+
+function previewBulkUsers() {
+    const fileInput = document.getElementById('bulkUsersFileInput');
+    const errDiv = document.getElementById('bulkUploadStep1Error');
+    if (!fileInput.files || fileInput.files.length === 0) {
+        errDiv.textContent = 'Please choose a .csv or .xlsx file.';
+        errDiv.style.display = 'block';
+        return;
+    }
+    errDiv.style.display = 'none';
+
+    const previewBtn = document.getElementById('btnPreviewBulkUsers');
+    previewBtn.disabled = true;
+    previewBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Parsing file...';
+
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+
+    fetch('{{ url_for("ui.bulk_preview_users") }}', {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        body: formData
+    })
+    .then(res => res.json())
+    .then(data => {
+        previewBtn.disabled = false;
+        previewBtn.innerHTML = '<i class="fa-solid fa-magnifying-glass"></i> <span>Preview Users</span>';
+        if (data.success) {
+            renderBulkUsersPreview(data);
+        } else {
+            errDiv.textContent = data.error || 'Failed to parse user file.';
+            errDiv.style.display = 'block';
+        }
+    })
+    .catch(err => {
+        previewBtn.disabled = false;
+        previewBtn.innerHTML = '<i class="fa-solid fa-magnifying-glass"></i> <span>Preview Users</span>';
+        errDiv.textContent = 'Network error: ' + err.message;
+        errDiv.style.display = 'block';
+    });
+}
+
+function renderBulkUsersPreview(data) {
+    const users = data.users || [];
+    const summary = data.summary || {};
+    
+    // Switch Views
+    document.getElementById('bulkUploadStep1').style.display = 'none';
+    document.getElementById('bulkUploadStep2').style.display = 'block';
+    const modalTitle = document.getElementById('bulkUsersModalTitle');
+    if (modalTitle) modalTitle.textContent = `Bulk Import Preview (${users.length} Records)`;
+
+    // Render Summary Bar
+    const summaryBar = document.getElementById('bulkPreviewSummaryBar');
+    summaryBar.innerHTML = `
+        <span style="font-weight: 600; color: var(--text-white);"><i class="fa-solid fa-list-check" style="color: var(--accent-purple); margin-right: 4px;"></i> Total Found: <strong>${summary.total || users.length}</strong></span>
+        <span style="color: var(--border-color);">|</span>
+        <span class="badge badge-success" style="font-size: 11px;"><i class="fa-solid fa-circle-check"></i> ${summary.valid || 0} Ready</span>
+        ${summary.existing ? `<span class="badge badge-warning" style="font-size: 11px;"><i class="fa-solid fa-triangle-exclamation"></i> ${summary.existing} Existing (will update)</span>` : ''}
+        ${summary.invalid ? `<span class="badge badge-danger" style="font-size: 11px;"><i class="fa-solid fa-circle-xmark"></i> ${summary.invalid} Invalid</span>` : ''}
+    `;
+
+    // Render Table Rows (Masked Password)
+    const tbody = document.getElementById('bulkPreviewTableBody');
+    tbody.innerHTML = '';
+
+    if (users.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; padding: 16px; color: var(--text-muted);">No valid rows found in file.</td></tr>';
+    } else {
+        users.forEach((u, i) => {
+            const tr = document.createElement('tr');
+            tr.style.borderBottom = '1px solid var(--border-color)';
+            
+            let roleBadge = '<span class="badge badge-success" style="font-size: 10px;">Contributor</span>';
+            if (u.role === 'admin') roleBadge = '<span class="badge badge-warning" style="font-size: 10px;">Admin</span>';
+            if (u.role === 'reader') roleBadge = '<span class="badge badge-purple" style="font-size: 10px;">Reader</span>';
+
+            let statusBadge = '<span class="badge badge-success" style="font-size: 10px;"><i class="fa-solid fa-check"></i> Ready</span>';
+            if (!u.is_valid) {
+                statusBadge = `<span class="badge badge-danger" style="font-size: 10px;" title="${u.error_msg || 'Invalid'}"><i class="fa-solid fa-xmark"></i> ${u.error_msg || 'Invalid'}</span>`;
+            } else if (u.already_exists) {
+                statusBadge = '<span class="badge badge-warning" style="font-size: 10px;" title="User already exists, password & role will update"><i class="fa-solid fa-rotate"></i> Update</span>';
+            }
+
+            const resetBadge = u.must_change_password ? 
+                '<span class="badge badge-warning" style="font-size: 10px;">Yes</span>' : 
+                '<span class="badge badge-neutral" style="font-size: 10px;">No</span>';
+
+            const expiryText = u.password_expiry_days === 0 ? 'Never' : `${u.password_expiry_days || 90}d`;
+
+            tr.innerHTML = `
+                <td style="padding: 6px 8px; text-align: center; color: var(--text-muted); font-family: var(--font-code);">${u.row_index || (i+1)}</td>
+                <td style="padding: 6px 8px; font-weight: 600; color: var(--text-white); font-family: var(--font-code);">${u.username || '--'}</td>
+                <td style="padding: 6px 8px; color: var(--text-normal);">${u.display_name || u.username || '--'}</td>
+                <td style="padding: 6px 8px; color: var(--text-muted); font-size: 11px;">${u.email || '--'}</td>
+                <td style="padding: 6px 8px; text-align: center;">${roleBadge}</td>
+                <td style="padding: 6px 8px; text-align: center; font-family: var(--font-code); letter-spacing: 2px; color: var(--text-muted); font-size: 11px;">${u.masked_password || '••••••••'}</td>
+                <td style="padding: 6px 8px; text-align: center;">${resetBadge}</td>
+                <td style="padding: 6px 8px; text-align: center; font-size: 11px; color: var(--text-muted); font-family: var(--font-code);">${expiryText}</td>
+                <td style="padding: 6px 8px; text-align: center;">${statusBadge}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+    }
+
+    const confirmBtn = document.getElementById('btnConfirmBulkCreate');
+    const confirmBtnText = document.getElementById('btnConfirmBulkCreateText');
+    const validCount = summary.valid || 0;
+    if (confirmBtn && confirmBtnText) {
+        if (validCount > 0) {
+            confirmBtn.disabled = false;
+            confirmBtnText.textContent = `Confirm & Create ${validCount} User(s)`;
+        } else {
+            confirmBtn.disabled = true;
+            confirmBtnText.textContent = 'No Valid Users to Create';
+        }
+    }
+}
+
+function confirmBulkUsersCreate() {
+    const confirmBtn = document.getElementById('btnConfirmBulkCreate');
+    const errDiv = document.getElementById('bulkUploadStep2Error');
+    if (confirmBtn) {
+        confirmBtn.disabled = true;
+        confirmBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Creating users...';
+    }
+    if (errDiv) errDiv.style.display = 'none';
+
+    fetch('{{ url_for("ui.bulk_create_users") }}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest'
+        },
+        body: JSON.stringify({ confirm: true })
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.success) {
+            closeModal('bulkUsersModal');
+            window.location.reload();
+        } else {
+            if (confirmBtn) {
+                confirmBtn.disabled = false;
+                confirmBtn.innerHTML = '<i class="fa-solid fa-user-plus"></i> <span>Confirm & Create Users</span>';
+            }
+            if (errDiv) {
+                errDiv.textContent = data.error || 'Failed to create users.';
+                errDiv.style.display = 'block';
+            }
+        }
+    })
+    .catch(err => {
+        if (confirmBtn) {
+            confirmBtn.disabled = false;
+            confirmBtn.innerHTML = '<i class="fa-solid fa-user-plus"></i> <span>Confirm & Create Users</span>';
+        }
+        if (errDiv) {
+            errDiv.textContent = 'Network error: ' + err.message;
+            errDiv.style.display = 'block';
+        }
+    });
+}
+
+function openEditUserModal(username, display, email, role, passwordExpiryDays) {
+    document.getElementById('editUserUsername').value = username;
+    document.getElementById('editUserDisplayUsername').value = username;
+    document.getElementById('editUserDisplayName').value = display || '';
+    document.getElementById('editUserEmail').value = email || '';
+    document.getElementById('editUserRole').value = role || 'contributor';
+    const expiryInput = document.getElementById('editUserPasswordExpiry');
+    if (expiryInput) {
+        expiryInput.value = (passwordExpiryDays !== undefined && passwordExpiryDays !== '' && passwordExpiryDays !== 'None') ? passwordExpiryDays : '90';
+    }
     openModal('editUserModal');
 }
 
 function openResetPasswordModal(username) {
-    document.getElementById('reset_target_username').value = username;
-    document.getElementById('resetTargetDisplay').innerText = username;
-    document.getElementById('reset_new_password').value = '';
+    document.getElementById('resetPasswordUsername').value = username;
+    document.getElementById('resetPasswordDisplayUsername').textContent = username;
     openModal('resetPasswordModal');
 }
 
 function openDeleteUserModal(username) {
-    document.getElementById('delete_target_username').value = username;
-    document.getElementById('deleteTargetDisplay').innerText = username;
+    document.getElementById('deleteUserUsername').value = username;
+    document.getElementById('deleteUserDisplayUsername').textContent = username;
     openModal('deleteUserModal');
 }
+
+function validateAddUserForm(e) {
+    const u = document.getElementById('addUsername').value.trim();
+    const p = document.getElementById('addPassword').value;
+    const err = document.getElementById('addUserError');
+    if (!u) {
+        e.preventDefault();
+        err.textContent = 'Username is required.';
+        err.style.display = 'block';
+        return false;
+    }
+    if (p.length < 6) {
+        e.preventDefault();
+        err.textContent = 'Password must be at least 6 characters long.';
+        err.style.display = 'block';
+        return false;
+    }
+    err.style.display = 'none';
+    return true;
+}
+
+function toggleActionDropdown(event, button) {
+    if (event) {
+        event.stopPropagation();
+        event.preventDefault();
+    }
+    const parent = button.closest('.action-dropdown');
+    if (!parent) return;
+    const isCurrentlyActive = parent.classList.contains('active');
+    document.querySelectorAll('.action-dropdown.active').forEach(el => el.classList.remove('active'));
+    if (!isCurrentlyActive) {
+        parent.classList.add('active');
+    }
+}
+
+window.addEventListener('click', function(e) {
+    if (!e.target.closest('.action-dropdown')) {
+        document.querySelectorAll('.action-dropdown.active').forEach(el => el.classList.remove('active'));
+    }
+});
 
 function filterUsersTable(query) {
     const q = (query || '').toLowerCase().trim();
     const rows = document.querySelectorAll('.user-row');
-    const btnClear = document.getElementById('btnClearUserSearch');
-    if (btnClear) btnClear.style.display = q ? 'block' : 'none';
-
-    rows.forEach(r => {
-        const u = (r.getAttribute('data-username') || '').toLowerCase();
-        const d = (r.getAttribute('data-display') || '').toLowerCase();
-        const e = (r.getAttribute('data-email') || '').toLowerCase();
-        if (!q || u.includes(q) || d.includes(q) || e.includes(q)) {
-            r.style.display = '';
-        } else {
-            r.style.display = 'none';
-        }
+    rows.forEach(row => {
+        const u = row.getAttribute('data-username') || '';
+        const d = row.getAttribute('data-display') || '';
+        const m = row.getAttribute('data-email') || '';
+        const match = !q || u.toLowerCase().includes(q) || d.toLowerCase().includes(q) || m.toLowerCase().includes(q);
+        row.style.display = match ? '' : 'none';
     });
+    const clearBtn = document.getElementById('btnClearUserSearch');
+    if (clearBtn) clearBtn.style.display = q ? 'inline-block' : 'none';
 }
 
 function clearUserSearch() {
@@ -499,17 +929,8 @@ function clearUserSearch() {
     if (input) {
         input.value = '';
         filterUsersTable('');
+        input.focus();
     }
-}
-
-function validateAddUserForm(e) {
-    const p = document.getElementById('add_password').value;
-    if (p.length < 6) {
-        alert('Password must be at least 6 characters long.');
-        e.preventDefault();
-        return false;
-    }
-    return true;
 }
 </script>
 {% endblock %}

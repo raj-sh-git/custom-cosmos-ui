@@ -1,0 +1,11 @@
+flask_sessions
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.git
+.gitignore
+.DS_Store
+sample_import_*.json
+sample_import_*.jsonl
+.venv

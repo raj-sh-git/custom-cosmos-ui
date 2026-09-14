@@ -8,7 +8,7 @@ import queue
 import random
 import threading
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import (
     Flask, render_template, request, redirect, url_for, flash, session, jsonify, send_file, Blueprint, Response, abort, has_request_context
@@ -48,6 +48,8 @@ USER_CONTAINER = os.environ.get("COSMOS_USER_CONTAINER", os.environ.get("USER_CO
 LOGS_CONTAINER = os.environ.get("COSMOS_LOGS_CONTAINER", os.environ.get("LOGS_CONTAINER", "cosmosactivitylogs"))
 USER_PK_PATH = os.environ.get("COSMOS_USER_PK_PATH", "/id")
 LOGS_PK_PATH = os.environ.get("COSMOS_LOGS_PK_PATH", "/id")
+DEFAULT_PASSWORD_EXPIRY_DAYS = int(os.environ.get("DEFAULT_PASSWORD_EXPIRY_DAYS", "90"))
+ACTIVITY_LOG_RETENTION_DAYS = int(os.environ.get("ACTIVITY_LOG_RETENTION_DAYS", "30"))
 
 @app.context_processor
 def inject_user_context():
@@ -318,9 +320,9 @@ def get_user_by_username(client, username):
         print(f"Error fetching user {username}: {e}")
         return None
 
-def save_user(client, username, password=None, password_hash=None, email=None, display_name=None, role=None, is_active=None, must_change_password=None, update_login=False):
+def save_user(client, username, password=None, password_hash=None, email=None, display_name=None, role=None, is_active=None, must_change_password=None, password_expiry_days=None, update_login=False):
     """
-    Creates or updates a user document in USER_CONTAINER with salted one-way scrypt password hashing.
+    Creates or updates a user document in USER_CONTAINER with salted one-way scrypt password hashing and password expiry tracking.
     """
     uname = username.strip()
     row_id = uname.lower()
@@ -338,6 +340,8 @@ def save_user(client, username, password=None, password_hash=None, email=None, d
             "role": (role or "contributor").lower().strip(),
             "is_active": True if is_active is None else bool(is_active),
             "must_change_password": False if must_change_password is None else bool(must_change_password),
+            "password_expiry_days": int(password_expiry_days if password_expiry_days is not None else DEFAULT_PASSWORD_EXPIRY_DAYS),
+            "password_last_set_at": now_iso,
             "created_at": now_iso,
             "last_login": now_iso if update_login else ""
         }
@@ -353,13 +357,20 @@ def save_user(client, username, password=None, password_hash=None, email=None, d
             user_doc["is_active"] = bool(is_active)
         if must_change_password is not None:
             user_doc["must_change_password"] = bool(must_change_password)
+        if password_expiry_days is not None:
+            try:
+                user_doc["password_expiry_days"] = int(password_expiry_days)
+            except (ValueError, TypeError):
+                user_doc["password_expiry_days"] = DEFAULT_PASSWORD_EXPIRY_DAYS
         if update_login:
             user_doc["last_login"] = now_iso
 
     if password:
         user_doc["password_hash"] = generate_password_hash(password, method="scrypt")
+        user_doc["password_last_set_at"] = now_iso
     elif password_hash:
         user_doc["password_hash"] = password_hash
+        user_doc["password_last_set_at"] = now_iso
 
     try:
         execute_with_429_retry(container.upsert_item, body=user_doc)
@@ -370,7 +381,7 @@ def save_user(client, username, password=None, password_hash=None, email=None, d
     return user_doc
 
 def get_all_users(client):
-    """List all registered users from USER_CONTAINER."""
+    """List all registered users from USER_CONTAINER with password expiry calculations."""
     try:
         container = get_system_user_container(client)
         items = list(container.query_items("SELECT * FROM c", enable_cross_partition_query=True))
@@ -381,8 +392,44 @@ def get_all_users(client):
             u.setdefault("role", "contributor")
             u.setdefault("is_active", True)
             u.setdefault("must_change_password", False)
+            u.setdefault("password_expiry_days", DEFAULT_PASSWORD_EXPIRY_DAYS)
+            u.setdefault("password_last_set_at", u.get("created_at", ""))
             u.setdefault("last_login", "")
             u.setdefault("created_at", "")
+
+            try:
+                expiry_days = int(u.get("password_expiry_days", DEFAULT_PASSWORD_EXPIRY_DAYS) or 0)
+            except Exception:
+                expiry_days = DEFAULT_PASSWORD_EXPIRY_DAYS
+            u["password_expiry_days"] = expiry_days
+
+            last_set = u.get("password_last_set_at") or u.get("created_at")
+            if expiry_days <= 0:
+                u["expiry_status"] = "Never Expires"
+                u["days_remaining"] = None
+                u["is_expired"] = False
+            elif last_set:
+                try:
+                    last_set_dt = datetime.fromisoformat(last_set.replace("Z", "+00:00"))
+                    age_days = (datetime.now(timezone.utc) - last_set_dt).days
+                    rem_days = expiry_days - age_days
+                    u["days_remaining"] = rem_days
+                    u["password_age_days"] = age_days
+                    if rem_days <= 0:
+                        u["expiry_status"] = "Expired"
+                        u["is_expired"] = True
+                    else:
+                        u["expiry_status"] = f"{rem_days} days left"
+                        u["is_expired"] = False
+                except Exception:
+                    u["expiry_status"] = f"{expiry_days} days"
+                    u["days_remaining"] = expiry_days
+                    u["is_expired"] = False
+            else:
+                u["expiry_status"] = f"{expiry_days} days"
+                u["days_remaining"] = expiry_days
+                u["is_expired"] = False
+
             users.append(u)
         users.sort(key=lambda x: x.get("created_at", "") or x.get("username", ""))
         return users
@@ -404,14 +451,15 @@ def delete_user_by_username(client, username):
         pk_val = user.get(pk_key, item_id)
         execute_with_429_retry(container.delete_item, item=item_id, partition_key=pk_val)
 
-def bulk_create_users_from_file(client, file_obj, filename):
-    """Bulk imports users from CSV or Excel file."""
-    created = 0
-    skipped = 0
-    errors = []
+def parse_users_file(client, file_obj, filename):
+    """
+    Parses a CSV or Excel (.xlsx) file, validates fields, checks existing users in Cosmos DB,
+    and returns parsed list with masked passwords, summary counts, and error messages.
+    """
     rows = []
     fn = filename.lower()
-    
+    errors = []
+
     try:
         if fn.endswith(".csv"):
             content = file_obj.read().decode("utf-8-sig", errors="ignore")
@@ -434,46 +482,108 @@ def bulk_create_users_from_file(client, file_obj, filename):
                             row_dict[headers[i]] = str(val).strip() if val is not None else ""
                     rows.append(row_dict)
         else:
-            return 0, 0, ["Unsupported file format. Please upload a .csv or .xlsx file."]
+            return [], {"total": 0, "valid": 0, "invalid": 0, "existing": 0}, ["Unsupported file format. Please upload a .csv or .xlsx file."]
     except Exception as e:
-        return 0, 0, [f"Error reading file: {e}"]
+        return [], {"total": 0, "valid": 0, "invalid": 0, "existing": 0}, [f"Error reading file: {e}"]
+
+    parsed_users = []
+    valid_count = 0
+    invalid_count = 0
+    existing_count = 0
 
     for idx, row in enumerate(rows, start=2):
         n_row = {str(k).strip().lower(): str(v).strip() for k, v in row.items() if k is not None}
         username = n_row.get("username", "").strip()
         email = n_row.get("email", "").strip()
+        display_name = n_row.get("display_name", n_row.get("displayname", n_row.get("name", username))).strip() or username
         password = n_row.get("password", "").strip()
         role = n_row.get("role", "contributor").strip().lower()
         if role not in ["admin", "contributor", "reader"]:
             role = "contributor"
-        enforce_reset_val = n_row.get("enforcepasswordreset", n_row.get("enforce_reset", "yes")).strip().lower()
+
+        enforce_reset_val = n_row.get("enforcepasswordreset", n_row.get("enforce_reset", n_row.get("must_change_password", "yes"))).strip().lower()
         must_change = enforce_reset_val in ["yes", "true", "1", "y"]
-        display_name = n_row.get("display_name", n_row.get("displayname", username)).strip()
 
+        raw_expiry = n_row.get("password_expiry_days", n_row.get("expiry_days", n_row.get("expiry", "")))
+        try:
+            password_expiry_days = int(raw_expiry) if raw_expiry else DEFAULT_PASSWORD_EXPIRY_DAYS
+        except Exception:
+            password_expiry_days = DEFAULT_PASSWORD_EXPIRY_DAYS
+
+        row_errors = []
         if not username:
-            skipped += 1
-            errors.append(f"Row {idx}: Missing username.")
-            continue
+            row_errors.append("Missing username")
         if not password:
-            skipped += 1
-            errors.append(f"Row {idx}: Missing password for user '{username}'.")
-            continue
+            row_errors.append(f"Missing password for '{username or 'user'}'")
+        elif len(password) < 6:
+            row_errors.append(f"Password must be at least 6 characters for '{username}'")
 
+        is_valid = len(row_errors) == 0
+        already_exists = False
+        if username and client:
+            try:
+                if get_user_by_username(client, username) is not None:
+                    already_exists = True
+                    existing_count += 1
+            except Exception:
+                pass
+
+        if is_valid:
+            valid_count += 1
+        else:
+            invalid_count += 1
+            errors.append(f"Row {idx}: {', '.join(row_errors)}")
+
+        user_item = {
+            "row_index": idx,
+            "username": username,
+            "display_name": display_name,
+            "email": email,
+            "password": password,
+            "masked_password": "••••••••" if password else "(empty)",
+            "role": role,
+            "must_change_password": must_change,
+            "password_expiry_days": password_expiry_days,
+            "is_valid": is_valid,
+            "already_exists": already_exists,
+            "error_msg": ", ".join(row_errors) if row_errors else ""
+        }
+        parsed_users.append(user_item)
+
+    summary = {
+        "total": len(parsed_users),
+        "valid": valid_count,
+        "invalid": invalid_count,
+        "existing": existing_count
+    }
+    return parsed_users, summary, errors
+
+def bulk_create_users_from_file(client, file_obj, filename):
+    """Bulk imports users from CSV or Excel file."""
+    parsed_users, summary, errors = parse_users_file(client, file_obj, filename)
+    created = 0
+    skipped = 0
+
+    for u in parsed_users:
+        if not u["is_valid"]:
+            skipped += 1
+            continue
         try:
             save_user(
                 client=client,
-                username=username,
-                password=password,
-                email=email,
-                display_name=display_name,
-                role=role,
+                username=u["username"],
+                password=u["password"],
+                email=u["email"],
+                display_name=u["display_name"],
+                role=u["role"],
                 is_active=True,
-                must_change_password=must_change
+                must_change_password=u["must_change_password"],
+                password_expiry_days=u["password_expiry_days"]
             )
             created += 1
         except Exception as e:
             skipped += 1
-            errors.append(f"Row {idx} ({username}): {e}")
+            errors.append(f"Row {u['row_index']} ({u['username']}): {e}")
 
     return created, skipped, errors
 
@@ -527,13 +637,49 @@ def log_activity(service, action, target, status='SUCCESS', details='', username
     except Exception as e:
         print(f"Activity logging error: {e}")
 
+def cleanup_old_activity_logs(client=None, retention_days=None):
+    """Purges activity logs older than retention_days (default ACTIVITY_LOG_RETENTION_DAYS=30 days) from LOGS_CONTAINER."""
+    try:
+        cl = client or get_cosmos_client()
+        if not cl:
+            return 0
+        days = retention_days if retention_days is not None else ACTIVITY_LOG_RETENTION_DAYS
+        container = get_system_logs_container(cl)
+        cutoff_dt = datetime.now(timezone.utc) - timedelta(days=days)
+        cutoff_iso = cutoff_dt.isoformat()
+
+        pk_path = normalize_pk_path(LOGS_PK_PATH)
+        pk_key = pk_path.strip("/")
+
+        old_items = list(container.query_items(
+            query="SELECT c.id, c.timestamp FROM c WHERE c.timestamp < @cutoff",
+            parameters=[{"name": "@cutoff", "value": cutoff_iso}],
+            enable_cross_partition_query=True
+        ))
+        deleted_count = 0
+        for item in old_items:
+            try:
+                item_id = item["id"]
+                pk_val = item.get(pk_key, item_id)
+                execute_with_429_retry(container.delete_item, item=item_id, partition_key=pk_val)
+                deleted_count += 1
+            except Exception:
+                pass
+        return deleted_count
+    except Exception as e:
+        print(f"Error cleaning up old activity logs: {e}")
+        return 0
+
 def query_activity_logs(client, service=None, username=None, status=None, from_date=None, to_date=None, limit=250):
-    """Queries activity audit logs from LOGS_CONTAINER with filtering."""
+    """Queries activity audit logs from LOGS_CONTAINER with filtering and 30-day retention enforcement."""
     try:
         container = get_system_logs_container(client)
 
-        query = "SELECT * FROM c WHERE 1=1"
-        params = []
+        retention_cutoff_dt = (datetime.now(timezone.utc) - timedelta(days=ACTIVITY_LOG_RETENTION_DAYS)).date()
+        retention_cutoff_iso = retention_cutoff_dt.isoformat() + "T00:00:00"
+
+        query = "SELECT * FROM c WHERE c.timestamp >= @retention_cutoff"
+        params = [{"name": "@retention_cutoff", "value": retention_cutoff_iso}]
 
         if service and service != "all":
             query += " AND LOWER(c.service) = @service"
@@ -545,8 +691,13 @@ def query_activity_logs(client, service=None, username=None, status=None, from_d
             query += " AND c.status = @status"
             params.append({"name": "@status", "value": status.strip()})
         if from_date and from_date.strip():
+            try:
+                parsed_from = datetime.strptime(from_date.strip(), "%Y-%m-%d").date()
+                effective_from = max(parsed_from, retention_cutoff_dt)
+            except Exception:
+                effective_from = retention_cutoff_dt
             query += " AND c.timestamp >= @from_date"
-            params.append({"name": "@from_date", "value": f"{from_date.strip()}T00:00:00"})
+            params.append({"name": "@from_date", "value": f"{effective_from.isoformat()}T00:00:00"})
         if to_date and to_date.strip():
             query += " AND c.timestamp <= @to_date"
             params.append({"name": "@to_date", "value": f"{to_date.strip()}T23:59:59"})
@@ -800,6 +951,26 @@ def login():
                 session["pending_user"] = username
                 return redirect(url_for("ui.force_password_reset"))
 
+            # Check password expiry policy
+            try:
+                expiry_days = int(user.get("password_expiry_days", DEFAULT_PASSWORD_EXPIRY_DAYS) or 0)
+            except Exception:
+                expiry_days = DEFAULT_PASSWORD_EXPIRY_DAYS
+
+            if expiry_days > 0:
+                last_set = user.get("password_last_set_at") or user.get("created_at")
+                if last_set:
+                    try:
+                        last_set_dt = datetime.fromisoformat(last_set.replace("Z", "+00:00"))
+                        age_days = (datetime.now(timezone.utc) - last_set_dt).days
+                        if age_days >= expiry_days:
+                            save_user(client, username=username, must_change_password=True)
+                            session["pending_user"] = username
+                            flash(f"Your password has expired ({age_days} days old, max policy {expiry_days} days). Please create a new password.", "warning")
+                            return redirect(url_for("ui.force_password_reset"))
+                    except Exception as e:
+                        print(f"Password expiry check error: {e}")
+
             # Update last login & establish authenticated session
             save_user(client, username=username, update_login=True)
             session["user"] = {
@@ -927,6 +1098,7 @@ def setup():
                 role="admin",
                 is_active=True,
                 must_change_password=False,
+                password_expiry_days=0,
                 update_login=True
             )
             session["user"] = {
@@ -1066,9 +1238,18 @@ def create_user():
     role = request.form.get("role", "contributor").strip().lower()
     password = request.form.get("password", "")
     enforce_reset = bool(request.form.get("enforce_reset"))
+    expiry_days_raw = request.form.get("password_expiry_days")
+    try:
+        expiry_days = int(expiry_days_raw) if expiry_days_raw is not None and expiry_days_raw != "" else DEFAULT_PASSWORD_EXPIRY_DAYS
+    except (ValueError, TypeError):
+        expiry_days = DEFAULT_PASSWORD_EXPIRY_DAYS
 
     if not username or not password:
         flash("Username and password are required.", "danger")
+        return redirect(url_for("ui.users_list"))
+
+    if len(password) < 6:
+        flash("Password must be at least 6 characters.", "danger")
         return redirect(url_for("ui.users_list"))
 
     existing = get_user_by_username(client, username)
@@ -1085,9 +1266,10 @@ def create_user():
             display_name=display_name,
             role=role,
             is_active=True,
-            must_change_password=enforce_reset
+            must_change_password=enforce_reset,
+            password_expiry_days=expiry_days
         )
-        log_activity("user_mgmt", "CREATE_USER", username, status="SUCCESS", details=f"Role: {role}, Email: {email}")
+        log_activity("user_mgmt", "CREATE_USER", username, status="SUCCESS", details=f"Role: {role}, Email: {email}, Expiry: {expiry_days}d")
         flash(f"User '{username}' created successfully.", "success")
     except Exception as e:
         log_activity("user_mgmt", "CREATE_USER", username, status="FAILED", details=str(e))
@@ -1096,12 +1278,104 @@ def create_user():
     return redirect(url_for("ui.users_list"))
 
 
+@ui.route("/users/bulk-preview", methods=["POST"])
+@admin_required
+def bulk_preview_users():
+    client = get_cosmos_client()
+    uploaded_file = request.files.get("file")
+    if not uploaded_file or not uploaded_file.filename:
+        return jsonify({"success": False, "error": "No file was uploaded."}), 400
+
+    parsed_users, summary, errors = parse_users_file(client, uploaded_file, uploaded_file.filename)
+    if not parsed_users and errors:
+        return jsonify({"success": False, "error": "; ".join(errors)}), 400
+
+    # Store raw parsed list in session for one-click confirmation
+    session["bulk_preview_users"] = parsed_users
+
+    # Return sanitized view payload with masked passwords
+    preview_users = []
+    for u in parsed_users:
+        preview_users.append({
+            "row_index": u["row_index"],
+            "username": u["username"],
+            "display_name": u["display_name"],
+            "email": u["email"],
+            "role": u["role"],
+            "masked_password": u["masked_password"],
+            "must_change_password": u["must_change_password"],
+            "password_expiry_days": u["password_expiry_days"],
+            "is_valid": u["is_valid"],
+            "already_exists": u["already_exists"],
+            "error_msg": u["error_msg"]
+        })
+
+    return jsonify({
+        "success": True,
+        "summary": summary,
+        "users": preview_users,
+        "errors": errors
+    })
+
+
 @ui.route("/users/bulk-create", methods=["POST"])
 @admin_required
 def bulk_create_users():
     client = get_cosmos_client()
+    is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest" or request.is_json
+    data = request.get_json(silent=True) or {}
+    confirm = data.get("confirm") or request.form.get("confirm")
+
+    if confirm:
+        cached_users = session.pop("bulk_preview_users", None)
+        if not cached_users:
+            if is_ajax:
+                return jsonify({"success": False, "error": "Preview session expired. Please re-upload the file."}), 400
+            flash("Preview session expired. Please re-upload the file.", "warning")
+            return redirect(url_for("ui.users_list"))
+
+        created = 0
+        skipped = 0
+        errors = []
+        for u in cached_users:
+            if not u["is_valid"]:
+                skipped += 1
+                continue
+            try:
+                save_user(
+                    client=client,
+                    username=u["username"],
+                    password=u["password"],
+                    email=u["email"],
+                    display_name=u["display_name"],
+                    role=u["role"],
+                    is_active=True,
+                    must_change_password=u["must_change_password"],
+                    password_expiry_days=u.get("password_expiry_days", DEFAULT_PASSWORD_EXPIRY_DAYS)
+                )
+                created += 1
+            except Exception as e:
+                skipped += 1
+                errors.append(f"Row {u['row_index']} ({u['username']}): {e}")
+
+        details = f"Created: {created}, Skipped: {skipped}"
+        if errors:
+            details += f" (Errors: {'; '.join(errors[:3])})"
+        log_activity("user_mgmt", "BULK_CREATE_USERS", "Bulk Import (Preview Confirmed)", status="SUCCESS" if created > 0 else "FAILED", details=details)
+
+        msg = f"Bulk import complete: {created} user(s) created."
+        if skipped > 0:
+            msg += f" {skipped} skipped."
+        if is_ajax:
+            return jsonify({"success": True, "created": created, "skipped": skipped, "errors": errors, "message": msg})
+        flash(msg, "success" if created > 0 else "warning")
+        return redirect(url_for("ui.users_list"))
+
+    # Direct file upload fallback
     uploaded_file = request.files.get("file")
     if not uploaded_file or not uploaded_file.filename:
+        if is_ajax:
+            return jsonify({"success": False, "error": "No file was uploaded."}), 400
         flash("No file was uploaded.", "warning")
         return redirect(url_for("ui.users_list"))
 
@@ -1109,12 +1383,13 @@ def bulk_create_users():
     details = f"Created: {created}, Skipped: {skipped}"
     if errors:
         details += f" (Errors: {'; '.join(errors[:3])})"
-
     log_activity("user_mgmt", "BULK_CREATE_USERS", uploaded_file.filename, status="SUCCESS" if created > 0 else "FAILED", details=details)
 
     msg = f"Bulk import complete: {created} user(s) created."
     if skipped > 0:
         msg += f" {skipped} skipped. {'; '.join(errors)}"
+    if is_ajax:
+        return jsonify({"success": True, "created": created, "skipped": skipped, "errors": errors, "message": msg})
     flash(msg, "success" if created > 0 else "warning")
     return redirect(url_for("ui.users_list"))
 
@@ -1127,15 +1402,27 @@ def edit_user():
     display_name = request.form.get("display_name", "").strip()
     email = request.form.get("email", "").strip()
     role = request.form.get("role", "contributor").strip().lower()
+    expiry_days_raw = request.form.get("password_expiry_days")
+    try:
+        expiry_days = int(expiry_days_raw) if expiry_days_raw is not None and expiry_days_raw != "" else DEFAULT_PASSWORD_EXPIRY_DAYS
+    except (ValueError, TypeError):
+        expiry_days = DEFAULT_PASSWORD_EXPIRY_DAYS
 
     try:
-        save_user(client=client, username=username, display_name=display_name, email=email, role=role)
+        save_user(
+            client=client,
+            username=username,
+            display_name=display_name,
+            email=email,
+            role=role,
+            password_expiry_days=expiry_days
+        )
         if session.get("user", {}).get("username") == username:
             session["user"]["display_name"] = display_name or username
             session["user"]["email"] = email
             session["user"]["role"] = role
 
-        log_activity("user_mgmt", "EDIT_USER", username, status="SUCCESS", details=f"Role: {role}, Email: {email}")
+        log_activity("user_mgmt", "EDIT_USER", username, status="SUCCESS", details=f"Role: {role}, Email: {email}, Expiry: {expiry_days}d")
         flash(f"User '{username}' updated successfully.", "success")
     except Exception as e:
         log_activity("user_mgmt", "EDIT_USER", username, status="FAILED", details=str(e))
@@ -1214,10 +1501,10 @@ def delete_user():
 @ui.route("/users/template.csv")
 @admin_required
 def download_user_template():
-    csv_data = "username,email,password,enforcepasswordreset,role,display_name\n"
-    csv_data += "john,john@example.com,Password123!,yes,contributor,John Doe\n"
-    csv_data += "sarah,sarah@example.com,TempPass456!,yes,reader,Sarah Smith\n"
-    csv_data += "admin2,admin2@example.com,SecureAdmin789!,no,admin,Second Admin\n"
+    csv_data = "username,email,display_name,password,enforcepasswordreset,role,password_expiry_days\n"
+    csv_data += "john,john@example.com,John Doe,Password123!,yes,contributor,90\n"
+    csv_data += "sarah,sarah@example.com,Sarah Smith,TempPass456!,yes,reader,90\n"
+    csv_data += "admin2,admin2@example.com,Second Admin,SecureAdmin789!,no,admin,0\n"
     return Response(
         csv_data,
         mimetype="text/csv",
@@ -1236,6 +1523,12 @@ def activity_logs():
     filter_status = request.args.get("status", "all")
     from_date = request.args.get("from_date", "")
     to_date = request.args.get("to_date", "")
+
+    # Trigger asynchronous background cleanup of logs older than 30 days
+    try:
+        threading.Thread(target=cleanup_old_activity_logs, args=(client,), daemon=True).start()
+    except Exception:
+        pass
 
     logs = query_activity_logs(
         client=client,
